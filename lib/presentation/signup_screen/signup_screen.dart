@@ -179,8 +179,9 @@ class _SignupScreenState extends State<SignupScreen>
       final supabase = Supabase.instance.client;
       final user = supabase.auth.currentUser!;
       await supabase.auth.updateUser(UserAttributes(password: p));
-      await supabase.from('customers').insert({
+      await supabase.from('customers').upsert({
         'id': user.id,
+        'email': _emailCtrl.text.trim().toLowerCase(),
         'name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
         'house_no': _houseNoCtrl.text.trim(),
@@ -189,7 +190,7 @@ class _SignupScreenState extends State<SignupScreen>
         'city': _cityCtrl.text.trim(),
         'pincode': _pincodeCtrl.text.trim(),
         'language': 'en',
-      });
+      }, onConflict: 'id');
     } catch (e) {
       errorMessage = 'Sign up failed: ${e.toString()}';
     } finally {

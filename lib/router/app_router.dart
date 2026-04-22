@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../providers/auth_flow_notifier.dart';
 import '../presentation/admin_dashboard_screen/admin_dashboard_screen.dart';
 import '../presentation/cart_screen/cart_screen.dart';
 import '../presentation/checkout_screen/checkout_screen.dart';
@@ -29,8 +30,16 @@ GoRouter createAppRouter({required String initialLocation}) {
       ),
       GoRoute(path: '/landing', redirect: (context, state) => '/splash'),
       GoRoute(path: '/', redirect: (context, state) => '/splash'),
-      GoRoute(path: '/login', builder: (context, state) => const AuthScreen()),
-      GoRoute(path: '/signup', builder: (context, state) => const AuthScreen()),
+      GoRoute(
+        path: '/login',
+        builder: (context, state) =>
+            const AuthScreen(mode: AuthFlowMode.login),
+      ),
+      GoRoute(
+        path: '/signup',
+        builder: (context, state) =>
+            const AuthScreen(mode: AuthFlowMode.signup),
+      ),
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) {
           return CustomerMainScreen(navigationShell: navigationShell);

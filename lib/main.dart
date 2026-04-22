@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/app_export.dart';
 import 'widgets/custom_error_widget.dart';
+import 'auth/route_by_role.dart';
 import 'core/app_localizations.dart';
 import 'providers/customer_profile_notifier.dart';
 import 'router/app_router.dart';
@@ -26,26 +27,21 @@ void main() async {
   final session = Supabase.instance.client.auth.currentSession;
 
   if (session != null) {
-    final email = session.user.email ?? '';
     try {
-      final admin = await Supabase.instance.client
-          .from('admins')
-          .select('id')
-          .eq('email', email)
-          .maybeSingle();
-      if (admin != null) {
-        initialRoute = '/admin';
-      } else {
-        final rider = await Supabase.instance.client
-            .from('riders')
-            .select('id')
-            .eq('email', email)
-            .maybeSingle();
-        if (rider != null) {
+      final role = await resolveSignedInRole(
+        client: Supabase.instance.client,
+        user: session.user,
+      );
+      switch (role) {
+        case SignedInRole.admin:
+          initialRoute = '/admin';
+          break;
+        case SignedInRole.rider:
           initialRoute = '/rider';
-        } else {
+          break;
+        case SignedInRole.customer:
           initialRoute = '/home';
-        }
+          break;
       }
     } catch (e) {
       initialRoute = '/splash';

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../auth/route_by_role.dart';
 import '../../theme/app_theme.dart';
 import '../../core/app_localizations.dart';
 import '../../core/menu_pricing.dart';
@@ -101,10 +102,13 @@ class CustomerMainScreen extends StatefulWidget {
 }
 
 class _CustomerMainScreenState extends State<CustomerMainScreen> {
+  bool _showAdminTab = false;
+
   @override
   void initState() {
     super.initState();
     CartState.instance.addListener(_onCartChanged);
+    _loadRoleState();
   }
 
   @override
@@ -117,7 +121,27 @@ class _CustomerMainScreenState extends State<CustomerMainScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _loadRoleState() async {
+    try {
+      final role = await resolveSignedInRole();
+      if (!mounted) return;
+      setState(() {
+        _showAdminTab = role == SignedInRole.admin;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _showAdminTab = false;
+      });
+    }
+  }
+
   void _onTabTap(int index) {
+    if (_showAdminTab && index == 4) {
+      HapticFeedback.selectionClick();
+      context.go('/admin');
+      return;
+    }
     if (index == widget.navigationShell.currentIndex) return;
     HapticFeedback.selectionClick();
     widget.navigationShell.goBranch(index);
@@ -185,6 +209,14 @@ class _CustomerMainScreenState extends State<CustomerMainScreen> {
                 isActive: currentIndex == 3,
                 onTap: () => _onTabTap(3),
               ),
+              if (_showAdminTab)
+                _TabItem(
+                  icon: Icons.admin_panel_settings_outlined,
+                  activeIcon: Icons.admin_panel_settings_rounded,
+                  label: loc.t('admin_dashboard'),
+                  isActive: false,
+                  onTap: () => _onTabTap(4),
+                ),
             ],
           ),
         ),

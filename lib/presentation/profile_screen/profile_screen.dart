@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../auth/route_by_role.dart';
 import '../../theme/app_theme.dart';
 import '../../core/app_localizations.dart';
 import '../../providers/customer_profile_notifier.dart';
@@ -21,6 +22,7 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   List<Map<String, dynamic>> _orders = [];
   bool _loadingOrders = false;
+  bool _isAdmin = false;
 
   @override
   void initState() {
@@ -31,6 +33,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _loadData() async {
     setState(() => _loadingOrders = true);
     try {
+      final role = await resolveSignedInRole();
       final notifier = context.read<CustomerProfileNotifier>();
       await notifier.loadFromSupabase();
       final customer = notifier.customer;
@@ -39,15 +42,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final orders = await SupabaseService.instance.getCustomerOrders(cid);
         if (mounted) {
           setState(() {
+            _isAdmin = role == SignedInRole.admin;
             _orders = orders;
             _loadingOrders = false;
           });
         }
       } else {
-        if (mounted) setState(() => _loadingOrders = false);
+        if (mounted) {
+          setState(() {
+            _isAdmin = role == SignedInRole.admin;
+            _loadingOrders = false;
+          });
+        }
       }
     } catch (_) {
-      if (mounted) setState(() => _loadingOrders = false);
+      if (mounted) {
+        setState(() {
+          _isAdmin = false;
+          _loadingOrders = false;
+        });
+      }
     }
   }
 
@@ -256,7 +270,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    loc.t('customer'),
+                    _isAdmin ? 'Admin' : loc.t('customer'),
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,

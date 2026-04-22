@@ -27,6 +27,7 @@ class AuthService {
   }
 
   Future<void> saveCustomerProfile({
+    required String email,
     required String name,
     required String phone,
     required String houseNo,
@@ -42,8 +43,9 @@ class AuthService {
     }
 
     try {
-      final res = await _client.from('customers').insert({
+      final res = await _client.from('customers').upsert({
         'id': user.id,
+        'email': email.trim().toLowerCase(),
         'name': name.trim(),
         'phone': phone.trim(),
         'house_no': houseNo.trim(),
@@ -52,7 +54,7 @@ class AuthService {
         'city': city.trim(),
         'pincode': pincode.trim(),
         'language': language.trim(),
-      }).select();
+      }, onConflict: 'id').select();
       // Debug tip: keeps exact insert output visible during dev troubleshooting.
       // ignore: avoid_print
       print(res);

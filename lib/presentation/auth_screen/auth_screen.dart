@@ -10,7 +10,9 @@ import '../../theme/app_theme.dart';
 import '../../widgets/auth_pressable_button.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
+  const AuthScreen({super.key, required this.mode});
+
+  final AuthFlowMode mode;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -18,7 +20,6 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   final _emailCtrl = TextEditingController();
-  final _otpCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
@@ -33,7 +34,6 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   void dispose() {
     _emailCtrl.dispose();
-    _otpCtrl.dispose();
     _passwordCtrl.dispose();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
@@ -50,9 +50,10 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => AuthFlowNotifier(),
+      create: (_) => AuthFlowNotifier(mode: widget.mode),
       child: Consumer<AuthFlowNotifier>(
         builder: (context, authFlow, _) {
+          final isSignup = authFlow.mode == AuthFlowMode.signup;
           return Scaffold(
             backgroundColor: const Color(0xFFF5FBF6),
             body: SafeArea(
@@ -64,7 +65,11 @@ class _AuthScreenState extends State<AuthScreen> {
                     IconButton(
                       onPressed: () {
                         if (authFlow.step == AuthStep.emailInput) {
-                          context.pop();
+                          if (context.canPop()) {
+                            context.pop();
+                          } else {
+                            context.go('/splash');
+                          }
                         } else {
                           authFlow.goToEmailStep();
                         }
@@ -82,7 +87,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Custom OTP verification with email + password sign-in.',
+                      isSignup
+                          ? 'Create your account with email and onboarding details.'
+                          : 'Sign in with your email and password.',
                       style: GoogleFonts.poppins(
                         fontSize: 13,
                         color: AppTheme.textSecondary,
@@ -104,9 +111,7 @@ class _AuthScreenState extends State<AuthScreen> {
     switch (authFlow.step) {
       case AuthStep.emailInput:
         return _buildEmailStep(context, authFlow);
-      case AuthStep.otpInput:
-        return _buildOtpStep(context, authFlow);
-      case AuthStep.existingPassword:
+      case AuthStep.passwordInput:
         return _buildExistingPasswordStep(context, authFlow);
       case AuthStep.onboarding:
         return _buildOnboardingStep(context, authFlow);
@@ -114,6 +119,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Widget _buildEmailStep(BuildContext context, AuthFlowNotifier authFlow) {
+    final isSignup = authFlow.mode == AuthFlowMode.signup;
     return _AuthCard(
       title: 'Step 1 - Enter Email',
       child: Column(
@@ -131,9 +137,14 @@ class _AuthScreenState extends State<AuthScreen> {
                 : () async {
                     try {
                       authFlow.setEmail(_emailCtrl.text);
-                      await authFlow.sendOtp();
+                      await authFlow.continueFromEmail();
                       if (!context.mounted) return;
-                      showSuccessSnackbar(context, 'OTP sent to your email');
+                      showInfoSnackbar(
+                        context,
+                        isSignup
+                            ? 'Continue your account setup'
+                            : 'Enter your password to continue',
+                      );
                     } catch (e) {
                       if (!context.mounted) return;
                       showErrorSnackbar(
@@ -153,7 +164,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                   )
                 : Text(
-                    'Send OTP',
+                    'Continue',
                     style: GoogleFonts.poppins(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
@@ -165,102 +176,102 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  Widget _buildOtpStep(BuildContext context, AuthFlowNotifier authFlow) {
-    return _AuthCard(
-      title: 'Step 2 - Verify OTP',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'OTP sent to ${authFlow.email}',
-            style: GoogleFonts.poppins(
-              fontSize: 13,
-              color: AppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _otpCtrl,
-            keyboardType: TextInputType.number,
-            maxLength: 6,
-            decoration: _inputDecoration(
-              '6-digit OTP',
-              Icons.password_outlined,
-            ),
-          ),
-          AuthPressableButton(
-            onTap: authFlow.isLoading
-                ? null
-                : () async {
-                    try {
-                      final isVerified = await authFlow.verifyOtp(
-                        _otpCtrl.text,
-                      );
-                      if (!context.mounted) return;
-                      if (isVerified) {
-                        showSuccessSnackbar(
-                          context,
-                          'OTP verified successfully',
-                        );
-                      } else {
-                        showErrorSnackbar(context, 'Invalid OTP');
-                      }
-                    } catch (e) {
-                      if (!context.mounted) return;
-                      showErrorSnackbar(
-                        context,
-                        e.toString().replaceFirst('Exception: ', ''),
-                      );
-                    }
-                  },
-            backgroundColor: AppTheme.primary,
-            child: authFlow.isLoading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2.5,
-                    ),
-                  )
-                : Text(
-                    'Verify OTP',
-                    style: GoogleFonts.poppins(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-          ),
-          const SizedBox(height: 10),
-          TextButton(
-            onPressed: authFlow.isLoading
-                ? null
-                : () async {
-                    try {
-                      await authFlow.sendOtp();
-                      if (!context.mounted) return;
-                      showInfoSnackbar(context, 'A new OTP was sent');
-                    } catch (e) {
-                      if (!context.mounted) return;
-                      showErrorSnackbar(
-                        context,
-                        e.toString().replaceFirst('Exception: ', ''),
-                      );
-                    }
-                  },
-            child: const Text('Resend OTP'),
-          ),
-        ],
-      ),
-    );
-  }
+  // Widget _buildOtpStep(BuildContext context, AuthFlowNotifier authFlow) {
+  //   return _AuthCard(
+  //     title: 'Step 2 - Verify OTP',
+  //     child: Column(
+  //       crossAxisAlignment: CrossAxisAlignment.start,
+  //       children: [
+  //         Text(
+  //           'OTP sent to ${authFlow.email}',
+  //           style: GoogleFonts.poppins(
+  //             fontSize: 13,
+  //             color: AppTheme.textSecondary,
+  //           ),
+  //         ),
+  //         const SizedBox(height: 12),
+  //         TextField(
+  //           controller: _otpCtrl,
+  //           keyboardType: TextInputType.number,
+  //           maxLength: 6,
+  //           decoration: _inputDecoration(
+  //             '6-digit OTP',
+  //             Icons.password_outlined,
+  //           ),
+  //         ),
+  //         AuthPressableButton(
+  //           onTap: authFlow.isLoading
+  //               ? null
+  //               : () async {
+  //                   try {
+  //                     final isVerified = await authFlow.verifyOtp(
+  //                       _otpCtrl.text,
+  //                     );
+  //                     if (!context.mounted) return;
+  //                     if (isVerified) {
+  //                       showSuccessSnackbar(
+  //                         context,
+  //                         'OTP verified successfully',
+  //                       );
+  //                     } else {
+  //                       showErrorSnackbar(context, 'Invalid OTP');
+  //                     }
+  //                   } catch (e) {
+  //                     if (!context.mounted) return;
+  //                     showErrorSnackbar(
+  //                       context,
+  //                       e.toString().replaceFirst('Exception: ', ''),
+  //                     );
+  //                   }
+  //                 },
+  //           backgroundColor: AppTheme.primary,
+  //           child: authFlow.isLoading
+  //               ? const SizedBox(
+  //                   width: 22,
+  //                   height: 22,
+  //                   child: CircularProgressIndicator(
+  //                     color: Colors.white,
+  //                     strokeWidth: 2.5,
+  //                   ),
+  //                 )
+  //               : Text(
+  //                   'Verify OTP',
+  //                   style: GoogleFonts.poppins(
+  //                     color: Colors.white,
+  //                     fontWeight: FontWeight.w700,
+  //                   ),
+  //                 ),
+  //         ),
+  //         const SizedBox(height: 10),
+  //         TextButton(
+  //           onPressed: authFlow.isLoading
+  //               ? null
+  //               : () async {
+  //                   try {
+  //                     await authFlow.sendOtp();
+  //                     if (!context.mounted) return;
+  //                     showInfoSnackbar(context, 'A new OTP was sent');
+  //                   } catch (e) {
+  //                     if (!context.mounted) return;
+  //                     showErrorSnackbar(
+  //                       context,
+  //                       e.toString().replaceFirst('Exception: ', ''),
+  //                     );
+  //                   }
+  //                 },
+  //           child: const Text('Resend OTP'),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   Widget _buildExistingPasswordStep(
     BuildContext context,
     AuthFlowNotifier authFlow,
   ) {
     return _AuthCard(
-      title: 'Step 3 - Existing User Login',
+      title: 'Step 2 - Enter Password',
       child: Column(
         children: [
           TextField(
@@ -313,7 +324,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Widget _buildOnboardingStep(BuildContext context, AuthFlowNotifier authFlow) {
     return _AuthCard(
-      title: 'Step 3 - New User Onboarding',
+      title: 'Step 2 - New User Onboarding',
       child: Column(
         children: [
           TextField(

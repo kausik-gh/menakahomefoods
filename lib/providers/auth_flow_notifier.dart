@@ -1,22 +1,28 @@
 import 'package:flutter/foundation.dart';
 
 import '../services/auth_service.dart';
-import '../services/otp_service.dart';
 
-enum AuthStep { emailInput, otpInput, existingPassword, onboarding }
+enum AuthFlowMode { login, signup }
+
+enum AuthStep { emailInput, passwordInput, onboarding }
 
 class AuthFlowNotifier extends ChangeNotifier {
-  AuthFlowNotifier({AuthService? authService, OtpService? otpService})
-    : _authService = authService ?? AuthService(),
-      _otpService = otpService ?? OtpService();
+  AuthFlowNotifier({
+    required AuthFlowMode mode,
+    AuthService? authService,
+    // OtpService? otpService,
+  }) : _mode = mode,
+       _authService = authService ?? AuthService();
 
+  final AuthFlowMode _mode;
   final AuthService _authService;
-  final OtpService _otpService;
+  // final OtpService _otpService;
 
   AuthStep _step = AuthStep.emailInput;
   bool _isLoading = false;
   String _email = '';
 
+  AuthFlowMode get mode => _mode;
   AuthStep get step => _step;
   bool get isLoading => _isLoading;
   String get email => _email;
@@ -31,38 +37,49 @@ class AuthFlowNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendOtp() async {
+  Future<void> continueFromEmail() async {
     if (_email.isEmpty) {
       throw Exception('Please enter your email');
     }
 
-    _setLoading(true);
-    try {
-      await _otpService.sendOtp(_email);
-      _step = AuthStep.otpInput;
-      notifyListeners();
-    } finally {
-      _setLoading(false);
-    }
+    _step = _mode == AuthFlowMode.signup
+        ? AuthStep.onboarding
+        : AuthStep.passwordInput;
+    notifyListeners();
   }
 
-  Future<bool> verifyOtp(String otp) async {
-    _setLoading(true);
-    try {
-      final verification = await _otpService.verifyOtp(email: _email, otp: otp);
-      if (!verification.success) {
-        return false;
-      }
-
-      _step = verification.isExistingUser
-          ? AuthStep.existingPassword
-          : AuthStep.onboarding;
-      notifyListeners();
-      return true;
-    } finally {
-      _setLoading(false);
-    }
-  }
+  // Future<void> sendOtp() async {
+  //   if (_email.isEmpty) {
+  //     throw Exception('Please enter your email');
+  //   }
+  //
+  //   _setLoading(true);
+  //   try {
+  //     await _otpService.sendOtp(_email);
+  //     _step = AuthStep.otpInput;
+  //     notifyListeners();
+  //   } finally {
+  //     _setLoading(false);
+  //   }
+  // }
+  //
+  // Future<bool> verifyOtp(String otp) async {
+  //   _setLoading(true);
+  //   try {
+  //     final verification = await _otpService.verifyOtp(email: _email, otp: otp);
+  //     if (!verification.success) {
+  //       return false;
+  //     }
+  //
+  //     _step = verification.isExistingUser
+  //         ? AuthStep.passwordInput
+  //         : AuthStep.onboarding;
+  //     notifyListeners();
+  //     return true;
+  //   } finally {
+  //     _setLoading(false);
+  //   }
+  // }
 
   Future<void> loginExistingUser(String password) async {
     if (password.trim().isEmpty) {
@@ -116,6 +133,7 @@ class AuthFlowNotifier extends ChangeNotifier {
       }
 
       await _authService.saveCustomerProfile(
+        email: _email,
         name: name,
         phone: phone,
         houseNo: houseNo,
