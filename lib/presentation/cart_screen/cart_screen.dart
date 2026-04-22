@@ -187,13 +187,14 @@ class _CartScreenState extends State<CartScreen> {
 
   PreferredSizeWidget _buildAppBar() {
     return PreferredSize(
-      preferredSize: const Size.fromHeight(64),
+      preferredSize: const Size.fromHeight(76),
       child: Container(
         decoration: const BoxDecoration(gradient: AppTheme.primaryGradient),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 GestureDetector(
                   onTap: () => Navigator.pop(context),
@@ -219,6 +220,8 @@ class _CartScreenState extends State<CartScreen> {
                     children: [
                       Text(
                         'My Cart',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 18,
                           fontWeight: FontWeight.w700,

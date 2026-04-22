@@ -1,24 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 import '../../../theme/app_theme.dart';
 import '../../../widgets/custom_image_widget.dart';
 
 class TrackingPartnerCardWidget extends StatelessWidget {
   final int currentStep;
+  final String trackingStatus;
   final String? riderName;
   final String? riderPhone;
 
   const TrackingPartnerCardWidget({
     super.key,
     required this.currentStep,
+    required this.trackingStatus,
     this.riderName,
     this.riderPhone,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isAssigned = currentStep >= 2;
+    final isAssigned = trackingStatus == 'out_for_delivery' ||
+        trackingStatus == 'delivered';
 
     return Container(
       decoration: BoxDecoration(
@@ -57,16 +61,15 @@ class TrackingPartnerCardWidget extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
-          if (!isAssigned)
-            _buildUnassignedState()
-          else
-            _buildPartnerInfo(context),
+          if (!isAssigned) _buildUnassignedState() else _buildPartnerInfo(context),
         ],
       ),
     );
   }
 
   Widget _buildUnassignedState() {
+    final isPreparing = trackingStatus == 'preparing';
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -86,7 +89,9 @@ class TrackingPartnerCardWidget extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Finding a delivery partner...',
+                  isPreparing
+                      ? 'Preparing your order for pickup'
+                      : 'Finding a delivery partner...',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -94,7 +99,9 @@ class TrackingPartnerCardWidget extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  'Usually takes 2–3 minutes',
+                  isPreparing
+                      ? 'A rider will be assigned once your meal is packed'
+                      : 'Usually takes 2-3 minutes',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 11,
                     color: AppTheme.textMuted,
@@ -119,12 +126,15 @@ class TrackingPartnerCardWidget extends StatelessWidget {
   Widget _buildPartnerInfo(BuildContext context) {
     final name = riderName ?? 'Delivery Partner';
     final phone = riderPhone ?? '';
+    final statusLabel = trackingStatus == 'delivered'
+        ? 'Delivered'
+        : 'Out for delivery';
+    final etaLabel = trackingStatus == 'delivered' ? 'Completed' : '~20 minutes';
 
     return Column(
       children: [
         Row(
           children: [
-            // Partner photo
             Stack(
               children: [
                 Container(
@@ -156,7 +166,9 @@ class TrackingPartnerCardWidget extends StatelessWidget {
                     width: 18,
                     height: 18,
                     decoration: BoxDecoration(
-                      color: AppTheme.success,
+                      color: trackingStatus == 'delivered'
+                          ? AppTheme.success
+                          : AppTheme.primary,
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.white, width: 2),
                     ),
@@ -234,7 +246,7 @@ class TrackingPartnerCardWidget extends StatelessWidget {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        'On the way to you',
+                        statusLabel,
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 11,
                           color: AppTheme.textMuted,
@@ -248,7 +260,6 @@ class TrackingPartnerCardWidget extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 14),
-        // Action buttons
         Row(
           children: [
             Expanded(
@@ -297,7 +308,6 @@ class TrackingPartnerCardWidget extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        // ETA row
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
@@ -313,7 +323,9 @@ class TrackingPartnerCardWidget extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                'Estimated arrival',
+                trackingStatus == 'delivered'
+                    ? 'Delivery status'
+                    : 'Estimated arrival',
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 12,
                   color: AppTheme.textSecondary,
@@ -321,7 +333,7 @@ class TrackingPartnerCardWidget extends StatelessWidget {
               ),
               const Spacer(),
               Text(
-                '~20 minutes',
+                etaLabel,
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,

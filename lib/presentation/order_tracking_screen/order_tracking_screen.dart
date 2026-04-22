@@ -31,13 +31,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   bool _ratingShown = false;
   RealtimeChannel? _realtimeChannel;
 
-  int get _currentStep {
+  bool get _isPicked => (_activeOrder?['picked'] as bool?) ?? false;
+
+  String get _effectiveTrackingStatus {
     final status = _activeOrder?['status'] as String? ?? '';
-    switch (status) {
+    if (status == 'delivered') return 'delivered';
+    if (_isPicked) return 'out_for_delivery';
+    if (status == 'confirmed' || status == 'preparing') return 'preparing';
+    return 'placed';
+  }
+
+  int get _currentStep {
+    switch (_effectiveTrackingStatus) {
       case 'placed':
         return 0;
-      case 'confirmed':
-        return 1;
       case 'preparing':
         return 1;
       case 'out_for_delivery':
@@ -205,13 +212,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         : null;
 
     return PreferredSize(
-      preferredSize: const Size.fromHeight(64),
+      preferredSize: const Size.fromHeight(76),
       child: Container(
         decoration: const BoxDecoration(gradient: AppTheme.primaryGradient),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
                   child: Column(
@@ -229,6 +237,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       if (shortId != null)
                         Text(
                           'Order #$shortId',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: GoogleFonts.plusJakartaSans(
                             fontSize: 12,
                             color: Colors.white.withAlpha(217),
@@ -447,6 +457,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TrackingPartnerCardWidget(
               currentStep: _currentStep,
+              trackingStatus: _effectiveTrackingStatus,
               riderName: _activeOrder?['rider_name'] as String?,
               riderPhone: _activeOrder?['rider_phone'] as String?,
             ),
