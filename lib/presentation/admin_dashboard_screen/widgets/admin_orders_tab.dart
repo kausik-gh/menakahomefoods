@@ -57,8 +57,9 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
           .inFilter('status', ['active', 'paused'])
           .order('created_at', ascending: false);
       final ridersRes = await client
-          .from('riders')
+          .from('users')
           .select()
+          .eq('role', 'rider')
           .eq('status', 'active');
       if (mounted) {
         setState(() {
@@ -103,6 +104,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
           .from('orders')
           .update({
             'status': 'out_for_delivery',
+            'picked': true,
             'rider_id': rider['id'],
             'rider_name': rider['name'],
             'rider_phone': rider['phone'],

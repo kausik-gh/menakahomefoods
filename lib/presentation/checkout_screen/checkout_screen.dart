@@ -1,12 +1,11 @@
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_export.dart';
 import '../../core/app_snackbar.dart';
 import '../../core/menu_pricing.dart';
 import '../../providers/customer_profile_notifier.dart';
+import '../../services/supabase_service.dart';
 import '../customer_main/customer_main_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
@@ -91,80 +90,117 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   double get _total => (_orderData['total'] as num?)?.toDouble() ?? 0.0;
 
   Future<void> _placeOrder() async {
-    if (_selectedPayment == 'upi' && _selectedUpi == 'gpay') {
-      await _payWithGPay();
+    if (_isPlacingOrder) {
       return;
     }
+
+    final profile = context.read<CustomerProfileNotifier>();
+    if (profile.customer == null) {
+      await profile.loadFromSupabase();
+    }
+
+    final customer = profile.customer;
+    final customerId = profile.customerId;
+    if (customer == null || customerId == null || customerId.trim().isEmpty) {
+      if (mounted) {
+        showErrorSnackbar(context, 'Customer profile not loaded. Open Profile.');
+      }
+      return;
+    }
+
+    final selectedAddress = _addresses[_selectedAddressIndex];
+    final formattedAddress = profile.formattedAddress().trim();
+    final fallbackAddress =
+        '${selectedAddress['line1']}, ${selectedAddress['line2']}';
+    final meal = _resolvePrimaryMeal();
+    final items = _normalizedOrderItems();
+
     setState(() => _isPlacingOrder = true);
-    await Future.delayed(const Duration(milliseconds: 1800));
-    if (mounted) {
+    try {
+      final orderId = await SupabaseService.instance.saveOrder(
+        customerId: customerId,
+        customerName:
+            '${customer['name'] ?? ''}'.trim().isNotEmpty
+                ? '${customer['name']}'.trim()
+                : '${selectedAddress['name']}',
+        customerPhone:
+            '${customer['phone'] ?? ''}'.trim().isNotEmpty
+                ? '${customer['phone']}'.trim()
+                : '${selectedAddress['phone']}',
+        customerAddress:
+            formattedAddress.isNotEmpty ? formattedAddress : fallbackAddress,
+        items: items,
+        orderType: 'one_time',
+        meal: meal,
+        subtotal: (_orderData['subtotal'] as num?)?.toDouble() ?? 0,
+        deliveryFee: (_orderData['deliveryFee'] as num?)?.toDouble() ?? 0,
+        gst: (_orderData['gst'] as num?)?.toDouble() ?? 0,
+        discount: (_orderData['discount'] as num?)?.toDouble() ?? 0,
+        couponCode: _orderData['couponCode'] as String?,
+        total: _total,
+        paymentMethod: _selectedPaymentMethod(),
+        paymentStatus: _selectedPayment == 'cod' ? 'pending' : 'paid',
+      );
+
+      if (orderId == null) {
+        throw Exception('Order could not be saved.');
+      }
+
+      if (!mounted) return;
+
+      CartState.instance.clear();
       setState(() => _isPlacingOrder = false);
       context.go('/order-success');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isPlacingOrder = false);
+        showErrorSnackbar(context, 'Could not save order: $e');
+      }
     }
   }
 
-  /// Google Pay UPI deep link, then persist order in Supabase.
-  Future<void> _payWithGPay() async {
-    final profile = context.read<CustomerProfileNotifier>();
-    final customerId = profile.customerId;
-    final customerRow = profile.customer;
-    if (customerId == null || customerRow == null) {
-      showErrorSnackbar(context, 'Customer profile not loaded. Open Profile.');
-      return;
+  List<Map<String, dynamic>> _normalizedOrderItems() {
+    final itemsRaw = (_orderData['items'] as List?) ?? [];
+    return itemsRaw.map((entry) {
+      final item = Map<String, dynamic>.from(entry as Map);
+      final isVeg = item['isVeg'] as bool? ?? true;
+      final quantity =
+          ((item['quantity'] as num?) ?? (item['qty'] as num?) ?? 1).toInt();
+      final price =
+          (item['price'] as num?)?.toDouble() ?? getPrice(isVeg).toDouble();
+      return {
+        'dish_id': item['dish_id'] ?? item['id'],
+        'name': item['name'],
+        'meal': item['meal'],
+        'price': price,
+        'quantity': quantity,
+        'qty': quantity,
+      };
+    }).toList();
+  }
+
+  String _resolvePrimaryMeal() {
+    final items = _normalizedOrderItems();
+    final mealCounts = <String, int>{};
+    for (final item in items) {
+      final meal = (item['meal'] as String? ?? 'lunch').trim().toLowerCase();
+      final quantity = (item['quantity'] as int?) ?? 1;
+      mealCounts[meal] = (mealCounts[meal] ?? 0) + quantity;
     }
-
-    final total = _total;
-    final uri = Uri.parse(
-      'upi://pay?pa=menakahomefoods@okicici'
-      '&pn=MenakaHomeFoods'
-      '&am=${total.toStringAsFixed(2)}'
-      '&cu=INR'
-      '&tn=MenakaHomeFoodsOrder',
-    );
-
-    if (await canLaunchUrl(uri)) {
-      setState(() => _isPlacingOrder = true);
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-
-      final itemsRaw = (_orderData['items'] as List?) ?? [];
-      final cartItemsJson =
-          itemsRaw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-
-      try {
-        await Supabase.instance.client.from('orders').insert({
-          'customer_id': customerId,
-          'customer_name': customerRow['name'] ?? '',
-          'customer_address': profile.formattedAddress(),
-          'items': cartItemsJson,
-          'subtotal': (_orderData['subtotal'] as num?)?.toDouble() ?? 0,
-          'delivery_fee': (_orderData['deliveryFee'] as num?)?.toDouble() ?? 0,
-          'gst': (_orderData['gst'] as num?)?.toDouble() ?? 0,
-          'discount': (_orderData['discount'] as num?)?.toDouble() ?? 0,
-          'coupon_code': _orderData['couponCode'] ?? '',
-          'total': total,
-          'payment_method': 'gpay',
-          'payment_status': 'paid',
-          'status': 'placed',
-        });
-        CartState.instance.clear();
-        if (mounted) {
-          setState(() => _isPlacingOrder = false);
-          context.go('/order-success');
-        }
-      } catch (e) {
-        if (mounted) {
-          setState(() => _isPlacingOrder = false);
-          showErrorSnackbar(context, 'Could not save order: $e');
-        }
-      }
-    } else {
-      if (mounted) {
-        showErrorSnackbar(
-          context,
-          'GPay not installed. Please install GPay and try again.',
-        );
-      }
+    if (mealCounts.isEmpty) {
+      return 'lunch';
     }
+    return mealCounts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+  }
+
+  String _selectedPaymentMethod() {
+    if (_selectedPayment == 'upi') {
+      return _selectedUpi;
+    }
+    if (_selectedPayment == 'card') {
+      return 'card';
+    }
+    return 'cod';
   }
 
   @override
@@ -214,12 +250,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   PreferredSizeWidget _buildAppBar() {
     return PreferredSize(
-      preferredSize: const Size.fromHeight(64),
+      preferredSize: const Size.fromHeight(68),
       child: Container(
         decoration: const BoxDecoration(gradient: AppTheme.primaryGradient),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
               children: [
                 GestureDetector(

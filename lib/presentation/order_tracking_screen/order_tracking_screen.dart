@@ -85,7 +85,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       String customerId = '';
       if (authId != null) {
         final row = await Supabase.instance.client
-            .from('customers')
+            .from('users')
             .select('id')
             .eq('id', authId)
             .maybeSingle();

@@ -1,20 +1,25 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../theme/app_theme.dart';
+
 import '../../services/supabase_service.dart';
+import '../../theme/app_theme.dart';
 
 class RiderHomeScreen extends StatefulWidget {
   final String riderName;
   final String riderId;
+  final String riderPhone;
 
   const RiderHomeScreen({
     super.key,
     required this.riderName,
     required this.riderId,
+    required this.riderPhone,
   });
 
   @override
@@ -22,8 +27,19 @@ class RiderHomeScreen extends StatefulWidget {
 }
 
 class _RiderHomeScreenState extends State<RiderHomeScreen> {
-  List<Map<String, dynamic>> _activeOrders = [];
-  List<Map<String, dynamic>> _completedOrders = [];
+  static const List<String> _activeStatuses = <String>[
+    'placed',
+    'confirmed',
+    'preparing',
+    'out_for_delivery',
+  ];
+
+  final Set<String> _ignoredOrderIds = <String>{};
+  final Set<String> _busyOrderIds = <String>{};
+
+  List<Map<String, dynamic>> _availableOrders = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _activeOrders = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _completedOrders = <Map<String, dynamic>>[];
   bool _loading = true;
   RealtimeChannel? _ordersChannel;
 
@@ -35,13 +51,36 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant RiderHomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.riderId != widget.riderId) {
+      _ordersChannel?.unsubscribe();
+      _subscribeToOrders();
+      _loadOrders();
+    }
+  }
+
+  @override
   void dispose() {
     _ordersChannel?.unsubscribe();
     super.dispose();
   }
 
   Future<void> _loadOrders() async {
+    if (widget.riderId.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _availableOrders = <Map<String, dynamic>>[];
+          _activeOrders = <Map<String, dynamic>>[];
+          _completedOrders = <Map<String, dynamic>>[];
+          _loading = false;
+        });
+      }
+      return;
+    }
+
     setState(() => _loading = true);
+
     try {
       final today = DateTime.now();
       final todayStart = DateTime(
@@ -50,30 +89,46 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
         today.day,
       ).toIso8601String();
 
-      final active = await SupabaseService.instance.client
-          .from('orders')
-          .select()
-          .eq('rider_id', widget.riderId)
-          .inFilter('status', ['out_for_delivery', 'confirmed', 'preparing'])
-          .order('created_at', ascending: false);
+      final results = await Future.wait<dynamic>([
+        SupabaseService.instance.client
+            .from('orders')
+            .select()
+            .eq('picked', false)
+            .eq('status', 'placed')
+            .order('created_at', ascending: false),
+        SupabaseService.instance.client
+            .from('orders')
+            .select()
+            .eq('rider_id', widget.riderId)
+            .eq('picked', true)
+            .inFilter('status', _activeStatuses)
+            .order('created_at', ascending: false),
+        SupabaseService.instance.client
+            .from('orders')
+            .select()
+            .eq('rider_id', widget.riderId)
+            .eq('status', 'delivered')
+            .gte('updated_at', todayStart)
+            .order('updated_at', ascending: false),
+      ]);
 
-      final completed = await SupabaseService.instance.client
-          .from('orders')
-          .select()
-          .eq('rider_id', widget.riderId)
-          .eq('status', 'delivered')
-          .gte('updated_at', todayStart)
-          .order('updated_at', ascending: false);
+      final available = List<Map<String, dynamic>>.from(results[0] as List)
+          .where((order) => !_ignoredOrderIds.contains(order['id'] as String?))
+          .toList();
 
       if (mounted) {
         setState(() {
-          _activeOrders = List<Map<String, dynamic>>.from(active);
-          _completedOrders = List<Map<String, dynamic>>.from(completed);
+          _availableOrders = available;
+          _activeOrders = List<Map<String, dynamic>>.from(results[1] as List);
+          _completedOrders = List<Map<String, dynamic>>.from(results[2] as List);
           _loading = false;
         });
       }
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loading = false);
+        _showSnackBar('Unable to refresh orders right now.', isError: true);
+      }
     }
   }
 
@@ -89,41 +144,99 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
         .subscribe();
   }
 
+  Future<void> _acceptOrder(Map<String, dynamic> order) async {
+    final orderId = order['id'] as String?;
+    if (orderId == null || _busyOrderIds.contains(orderId)) return;
+
+    setState(() => _busyOrderIds.add(orderId));
+
+    try {
+      final nextStatus = (order['status'] as String?) == 'placed'
+          ? 'confirmed'
+          : (order['status'] as String? ?? 'confirmed');
+
+      final claimed = await SupabaseService.instance.client
+          .from('orders')
+          .update({
+            'picked': true,
+            'rider_id': widget.riderId,
+            'rider_name': widget.riderName,
+            'rider_phone': widget.riderPhone,
+            'status': nextStatus,
+            'updated_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', orderId)
+          .eq('picked', false)
+          .select('id')
+          .maybeSingle();
+
+      if (!mounted) return;
+
+      if (claimed == null) {
+        _showSnackBar('This order was already taken by another rider.');
+      } else {
+        HapticFeedback.mediumImpact();
+        _ignoredOrderIds.remove(orderId);
+        _showSnackBar('Order accepted and moved to active deliveries.');
+        await _loadOrders();
+      }
+    } catch (_) {
+      if (mounted) {
+        _showSnackBar('Unable to accept this order.', isError: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busyOrderIds.remove(orderId));
+      }
+    }
+  }
+
+  void _ignoreOrder(String orderId) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _ignoredOrderIds.add(orderId);
+      _availableOrders = _availableOrders
+          .where((order) => order['id'] != orderId)
+          .toList();
+    });
+    _showSnackBar('Order ignored for now.');
+  }
+
   Future<void> _markDelivered(String orderId) async {
+    if (_busyOrderIds.contains(orderId)) return;
+    setState(() => _busyOrderIds.add(orderId));
+
     try {
       await SupabaseService.instance.client
           .from('orders')
           .update({
             'status': 'delivered',
+            'delivered_at': DateTime.now().toIso8601String(),
             'updated_at': DateTime.now().toIso8601String(),
           })
           .eq('id', orderId);
+
+      if (!mounted) return;
+
       HapticFeedback.mediumImpact();
+      _showSnackBar('Order marked as delivered.');
+      await _loadOrders();
+    } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '✅ Order marked as delivered!',
-              style: GoogleFonts.plusJakartaSans(
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
-            ),
-            backgroundColor: AppTheme.success,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
-          ),
-        );
+        _showSnackBar('Unable to update delivery status.', isError: true);
       }
-    } catch (e) {
-      // silent
+    } finally {
+      if (mounted) {
+        setState(() => _busyOrderIds.remove(orderId));
+      }
     }
   }
 
-  void _openGoogleMaps(String address, double? lat, double? lng) async {
+  Future<void> _openGoogleMaps(
+    String address,
+    double? lat,
+    double? lng,
+  ) async {
     Uri uri;
     if (lat != null && lng != null) {
       uri = Uri.parse('google.navigation:q=$lat,$lng&mode=d');
@@ -133,13 +246,14 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
         );
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
-    } else {
-      final encoded = Uri.encodeComponent(address);
-      uri = Uri.parse(
-        'https://www.google.com/maps/dir/?api=1&destination=$encoded&travelmode=driving',
-      );
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
     }
+
+    final encoded = Uri.encodeComponent(address);
+    uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=$encoded&travelmode=driving',
+    );
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   String _formatItems(dynamic items) {
@@ -149,7 +263,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
       if (list.isEmpty) return 'No items';
       return list
               .take(2)
-              .map((i) => '${i['name']} x${i['quantity'] ?? 1}')
+              .map((item) => '${item['name']} x${item['quantity'] ?? 1}')
               .join(', ') +
           (list.length > 2 ? ' +${list.length - 2} more' : '');
     } catch (_) {
@@ -161,13 +275,55 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
     if (isoString == null) return '';
     try {
       final dt = DateTime.parse(isoString).toLocal();
-      final h = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
-      final m = dt.minute.toString().padLeft(2, '0');
+      final hour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+      final minute = dt.minute.toString().padLeft(2, '0');
       final period = dt.hour >= 12 ? 'PM' : 'AM';
-      return '$h:$m $period';
+      return '$hour:$minute $period';
     } catch (_) {
       return '';
     }
+  }
+
+  String _formatAmount(num? total) {
+    final value = total?.toDouble() ?? 0;
+    return 'Rs ${value.toStringAsFixed(0)}';
+  }
+
+  String _formatStatus(String status) {
+    switch (status) {
+      case 'placed':
+        return 'Placed';
+      case 'confirmed':
+        return 'Accepted';
+      case 'preparing':
+        return 'Preparing';
+      case 'out_for_delivery':
+        return 'Out for delivery';
+      case 'delivered':
+        return 'Delivered';
+      default:
+        return status;
+    }
+  }
+
+  void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          style: GoogleFonts.plusJakartaSans(
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        backgroundColor: isError ? AppTheme.error : AppTheme.primary,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
+      ),
+    );
   }
 
   @override
@@ -187,23 +343,50 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                 ),
               )
             else ...[
-              _buildSectionHeader('Active Deliveries 🛵', _activeOrders.length),
-              if (_activeOrders.isEmpty)
-                SliverToBoxAdapter(child: _buildEmptyActive())
+              _buildSectionHeader('Available Orders', _availableOrders.length),
+              if (_availableOrders.isEmpty)
+                SliverToBoxAdapter(child: _buildEmptyState(
+                  title: 'No new orders',
+                  subtitle: 'Orders waiting to be picked will appear here.',
+                  icon: Icons.inbox_rounded,
+                  borderColor: const Color(0xFFE5E7EB),
+                ))
               else
                 SliverList(
                   delegate: SliverChildBuilderDelegate(
-                    (ctx, i) => _buildActiveCard(_activeOrders[i]),
+                    (context, index) =>
+                        _buildAvailableCard(_availableOrders[index]),
+                    childCount: _availableOrders.length,
+                  ),
+                ),
+              _buildSectionHeader('Active Deliveries', _activeOrders.length),
+              if (_activeOrders.isEmpty)
+                SliverToBoxAdapter(child: _buildEmptyState(
+                  title: 'No active deliveries',
+                  subtitle: 'Accepted orders move here until they are delivered.',
+                  icon: Icons.delivery_dining_rounded,
+                  borderColor: const Color(0xFFBAE6FD),
+                ))
+              else
+                SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) => _buildActiveCard(_activeOrders[index]),
                     childCount: _activeOrders.length,
                   ),
                 ),
-              _buildSectionHeader('Completed Today ✅', _completedOrders.length),
+              _buildSectionHeader('Completed Today', _completedOrders.length),
               if (_completedOrders.isEmpty)
-                SliverToBoxAdapter(child: _buildEmptyCompleted())
+                SliverToBoxAdapter(child: _buildEmptyState(
+                  title: 'No completed deliveries yet',
+                  subtitle: 'Delivered orders from today will appear here.',
+                  icon: Icons.check_circle_rounded,
+                  borderColor: const Color(0xFFD1FAE5),
+                ))
               else
                 SliverList(
                   delegate: SliverChildBuilderDelegate(
-                    (ctx, i) => _buildCompletedCard(_completedOrders[i]),
+                    (context, index) =>
+                        _buildCompletedCard(_completedOrders[index]),
                     childCount: _completedOrders.length,
                   ),
                 ),
@@ -217,7 +400,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
 
   Widget _buildSliverAppBar() {
     return SliverAppBar(
-      expandedHeight: 120,
+      expandedHeight: 90,
       floating: false,
       pinned: true,
       backgroundColor: AppTheme.primary,
@@ -234,77 +417,64 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
           ),
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 6),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   Row(
                     children: [
-                      Image.asset(
-                        'assets/images/image-1776498594905.png',
-                        height: 36,
-                        fit: BoxFit.contain,
-                        semanticLabel: 'Menaka Home Foods logo',
+                      Container(
+                        width: 38,
+                        height: 38,
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: SvgPicture.asset(
+                          'assets/images/menaka_logo.svg',
+                          fit: BoxFit.contain,
+                          semanticsLabel: 'Menaka Home Foods logo',
+                        ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Hello, ${widget.riderName} 🛵',
+                              'Menaka',
                               style: GoogleFonts.plusJakartaSans(
-                                fontSize: 18,
+                                fontSize: 16,
                                 fontWeight: FontWeight.w800,
                                 color: Colors.white,
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
                             Text(
-                              '${_activeOrders.length} active • ${_completedOrders.length} done today',
+                              'Hello, ${widget.riderName}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 13,
-                                color: Colors.white.withAlpha(200),
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withAlpha(30),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: Colors.white.withAlpha(60)),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF4ADE80),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Online',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 12,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.white,
+                                color: Colors.white.withAlpha(220),
                               ),
                             ),
                           ],
                         ),
                       ),
+                      _buildOnlineChip(),
                     ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${_availableOrders.length} available  |  ${_activeOrders.length} active  |  ${_completedOrders.length} completed today',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withAlpha(200),
+                    ),
                   ),
                 ],
               ),
@@ -315,10 +485,42 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
     );
   }
 
+  Widget _buildOnlineChip() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(24),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withAlpha(56)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: Color(0xFF4ADE80),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Online',
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSectionHeader(String title, int count) {
     return SliverToBoxAdapter(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
         child: Row(
           children: [
             Text(
@@ -333,7 +535,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: AppTheme.primary.withAlpha(20),
+                color: AppTheme.primary.withAlpha(18),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
@@ -351,35 +553,55 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
     );
   }
 
-  Widget _buildEmptyActive() {
+  Widget _buildEmptyState({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color borderColor,
+  }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       child: Container(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: AppTheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFFFD4C8)),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: borderColor),
           boxShadow: AppTheme.cardShadow,
         ),
-        child: Column(
+        child: Row(
           children: [
-            const Text('📭', style: TextStyle(fontSize: 40)),
-            const SizedBox(height: 12),
-            Text(
-              'No active deliveries',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: borderColor.withAlpha(80),
+                borderRadius: BorderRadius.circular(12),
               ),
+              child: Icon(icon, color: AppTheme.textPrimary),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'New orders will appear here',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 13,
-                color: AppTheme.textMuted,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      color: AppTheme.textMuted,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -388,44 +610,160 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
     );
   }
 
-  Widget _buildEmptyCompleted() {
+  Widget _buildAvailableCard(Map<String, dynamic> order) {
+    final orderId = order['id'] as String? ?? '';
+    final customerName = order['customer_name'] as String? ?? 'Customer';
+    final address = order['customer_address'] as String? ?? 'No address';
+    final total = order['total'] as num?;
+    final busy = _busyOrderIds.contains(orderId);
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Container(
-        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: AppTheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFD1FAE5)),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFFDE68A)),
+          boxShadow: AppTheme.cardShadow,
         ),
-        child: Row(
-          children: [
-            const Text('🌟', style: TextStyle(fontSize: 28)),
-            const SizedBox(width: 12),
-            Text(
-              'No deliveries completed yet today',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 13,
-                color: AppTheme.textSecondary,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFF59E0B), Color(0xFFD97706)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Center(
+                      child: Text(
+                        customerName.isEmpty
+                            ? 'C'
+                            : customerName[0].toUpperCase(),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          customerName,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                        Text(
+                          _formatAmount(total),
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFFD97706),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _buildStatusChip(order['status'] as String? ?? 'placed'),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              _buildInfoLine(Icons.restaurant_rounded, _formatItems(order['items'])),
+              const SizedBox(height: 6),
+              _buildInfoLine(Icons.location_on_rounded, address),
+              const SizedBox(height: 6),
+              _buildInfoLine(
+                Icons.schedule_rounded,
+                'Placed at ${_formatTime(order['created_at'] as String?)}',
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: busy ? null : () => _ignoreOrder(orderId),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textSecondary,
+                        side: const BorderSide(color: Color(0xFFD1D5DB)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: Text(
+                        'Ignore',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: busy ? null : () => _acceptOrder(order),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.primary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Text(
+                              'Accept',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildActiveCard(Map<String, dynamic> order) {
+    final orderId = order['id'] as String? ?? '';
     final address = order['customer_address'] as String? ?? 'No address';
     final customerName = order['customer_name'] as String? ?? 'Customer';
     final customerLat = (order['customer_lat'] as num?)?.toDouble();
     final customerLng = (order['customer_lng'] as num?)?.toDouble();
-    final total = (order['total'] as num?)?.toDouble() ?? 0.0;
-    final orderId = order['id'] as String;
-    final status = order['status'] as String? ?? 'out_for_delivery';
+    final busy = _busyOrderIds.contains(orderId);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Container(
         decoration: BoxDecoration(
           color: AppTheme.surface,
@@ -442,7 +780,6 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: const BoxDecoration(
@@ -471,9 +808,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                     ),
                     child: Center(
                       child: Text(
-                        customerName.isNotEmpty
-                            ? customerName[0].toUpperCase()
-                            : 'C',
+                        customerName.isEmpty
+                            ? 'C'
+                            : customerName[0].toUpperCase(),
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 16,
                           fontWeight: FontWeight.w800,
@@ -494,76 +831,33 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary,
                           ),
-                          overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          '₹${total.toStringAsFixed(0)}',
+                          _formatAmount(order['total'] as num?),
                           style: GoogleFonts.plusJakartaSans(
                             fontSize: 13,
-                            fontWeight: FontWeight.w600,
+                            fontWeight: FontWeight.w700,
                             color: const Color(0xFF0EA5E9),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  _buildStatusChip(status),
+                  _buildStatusChip(order['status'] as String? ?? 'confirmed'),
                 ],
               ),
             ),
-            // Address
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.location_on_rounded,
-                    size: 16,
-                    color: AppTheme.primary,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      address,
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary,
-                        height: 1.4,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
+              child: _buildInfoLine(Icons.location_on_rounded, address),
             ),
-            // Items
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.restaurant_rounded,
-                    size: 14,
-                    color: AppTheme.textMuted,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _formatItems(order['items']),
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 12,
-                        color: AppTheme.textMuted,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+              child: _buildInfoLine(
+                Icons.restaurant_rounded,
+                _formatItems(order['items']),
               ),
             ),
-            // Mini map preview placeholder
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: GestureDetector(
@@ -579,67 +873,30 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                     ),
                     border: Border.all(color: const Color(0xFF7DD3FC)),
                   ),
-                  child: Stack(
-                    children: [
-                      Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(
-                              Icons.map_rounded,
-                              size: 28,
-                              color: Color(0xFF0284C7),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Tap to open route in Maps',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: const Color(0xFF0284C7),
-                              ),
-                            ),
-                          ],
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.map_rounded,
+                          size: 28,
+                          color: Color(0xFF0284C7),
                         ),
-                      ),
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 3,
-                          ),
-                          decoration: BoxDecoration(
+                        const SizedBox(height: 4),
+                        Text(
+                          'Open route in Maps',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
                             color: const Color(0xFF0284C7),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(
-                                Icons.navigation_rounded,
-                                size: 10,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 3),
-                              Text(
-                                'Navigate',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ],
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-            // Action buttons
             Padding(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -652,7 +909,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                       label: Text(
                         'Navigate',
                         style: GoogleFonts.plusJakartaSans(
-                          fontWeight: FontWeight.w600,
+                          fontWeight: FontWeight.w700,
                           fontSize: 13,
                         ),
                       ),
@@ -669,8 +926,17 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: () => _showDeliveredConfirm(orderId),
-                      icon: const Icon(Icons.check_circle_rounded, size: 16),
+                      onPressed: busy ? null : () => _showDeliveredConfirm(orderId),
+                      icon: busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.check_circle_rounded, size: 16),
                       label: Text(
                         'Delivered',
                         style: GoogleFonts.plusJakartaSans(
@@ -699,54 +965,75 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
   }
 
   Widget _buildStatusChip(String status) {
-    Color bg;
-    Color fg;
-    String label;
+    late final Color background;
+    late final Color foreground;
+
     switch (status) {
-      case 'out_for_delivery':
-        bg = const Color(0xFFDBEAFE);
-        fg = const Color(0xFF1D4ED8);
-        label = 'Out for Delivery';
-        break;
-      case 'preparing':
-        bg = const Color(0xFFFEF3C7);
-        fg = const Color(0xFFB45309);
-        label = 'Preparing';
+      case 'placed':
+        background = const Color(0xFFFDE68A);
+        foreground = const Color(0xFF92400E);
         break;
       case 'confirmed':
-        bg = const Color(0xFFD1FAE5);
-        fg = const Color(0xFF065F46);
-        label = 'Confirmed';
+        background = const Color(0xFFD1FAE5);
+        foreground = const Color(0xFF065F46);
+        break;
+      case 'preparing':
+        background = const Color(0xFFFEF3C7);
+        foreground = const Color(0xFFB45309);
+        break;
+      case 'out_for_delivery':
+        background = const Color(0xFFDBEAFE);
+        foreground = const Color(0xFF1D4ED8);
         break;
       default:
-        bg = const Color(0xFFF3F4F6);
-        fg = const Color(0xFF374151);
-        label = status;
+        background = const Color(0xFFF3F4F6);
+        foreground = const Color(0xFF374151);
     }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: bg,
+        color: background,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        label,
+        _formatStatus(status),
         style: GoogleFonts.plusJakartaSans(
           fontSize: 10,
           fontWeight: FontWeight.w700,
-          color: fg,
+          color: foreground,
         ),
       ),
     );
   }
 
+  Widget _buildInfoLine(IconData icon, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 15, color: AppTheme.textMuted),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 12,
+              color: AppTheme.textSecondary,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCompletedCard(Map<String, dynamic> order) {
     final customerName = order['customer_name'] as String? ?? 'Customer';
-    final total = (order['total'] as num?)?.toDouble() ?? 0.0;
-    final updatedAt = order['updated_at'] as String?;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -790,17 +1077,16 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                       fontWeight: FontWeight.w700,
                       color: AppTheme.textPrimary,
                     ),
-                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
                   Text(
                     _formatItems(order['items']),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 12,
                       color: AppTheme.textMuted,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
@@ -809,7 +1095,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  '₹${total.toStringAsFixed(0)}',
+                  _formatAmount(order['total'] as num?),
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
@@ -817,7 +1103,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
                   ),
                 ),
                 Text(
-                  _formatTime(updatedAt),
+                  _formatTime(order['updated_at'] as String?),
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 11,
                     color: AppTheme.textMuted,
@@ -832,16 +1118,16 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
   }
 
   void _showDeliveredConfirm(String orderId) {
-    showDialog(
+    showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text(
-          'Mark as Delivered?',
+          'Mark as delivered?',
           style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700),
         ),
         content: Text(
-          'Confirm that you have delivered this order to the customer.',
+          'Confirm that this delivery has been completed.',
           style: GoogleFonts.plusJakartaSans(
             fontSize: 14,
             color: AppTheme.textSecondary,
@@ -849,7 +1135,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => Navigator.pop(dialogContext),
             child: Text(
               'Cancel',
               style: GoogleFonts.plusJakartaSans(color: AppTheme.textMuted),
@@ -857,7 +1143,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> {
           ),
           ElevatedButton(
             onPressed: () {
-              Navigator.pop(ctx);
+              Navigator.pop(dialogContext);
               _markDelivered(orderId);
             },
             style: ElevatedButton.styleFrom(

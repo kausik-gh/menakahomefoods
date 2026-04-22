@@ -26,6 +26,16 @@ class _RiderCompletedScreenState extends State<RiderCompletedScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant RiderCompletedScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.riderId != widget.riderId) {
+      _channel?.unsubscribe();
+      _subscribe();
+      _loadCompleted();
+    }
+  }
+
+  @override
   void dispose() {
     _channel?.unsubscribe();
     super.dispose();

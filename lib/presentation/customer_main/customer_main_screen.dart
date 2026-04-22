@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
-import '../../auth/route_by_role.dart';
 import '../../theme/app_theme.dart';
-import '../../core/app_localizations.dart';
 import '../../core/menu_pricing.dart';
+import '../../widgets/global_bottom_bar.dart';
 
 /// Cart state shared across tabs
 class CartState {
@@ -102,13 +99,10 @@ class CustomerMainScreen extends StatefulWidget {
 }
 
 class _CustomerMainScreenState extends State<CustomerMainScreen> {
-  bool _showAdminTab = false;
-
   @override
   void initState() {
     super.initState();
     CartState.instance.addListener(_onCartChanged);
-    _loadRoleState();
   }
 
   @override
@@ -121,160 +115,21 @@ class _CustomerMainScreenState extends State<CustomerMainScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadRoleState() async {
-    try {
-      final role = await resolveSignedInRole();
-      if (!mounted) return;
-      setState(() {
-        _showAdminTab = role == SignedInRole.admin;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _showAdminTab = false;
-      });
-    }
-  }
-
   void _onTabTap(int index) {
-    if (_showAdminTab && index == 4) {
-      HapticFeedback.selectionClick();
-      context.go('/admin');
-      return;
-    }
     if (index == widget.navigationShell.currentIndex) return;
-    HapticFeedback.selectionClick();
     widget.navigationShell.goBranch(index);
   }
 
   @override
   Widget build(BuildContext context) {
-    final loc = AppLocalizations.of(context);
     final shell = widget.navigationShell;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
       body: shell,
-      bottomNavigationBar: _buildBottomNav(loc, shell.currentIndex),
-    );
-  }
-
-  Widget _buildBottomNav(AppLocalizations loc, int currentIndex) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(20),
-            blurRadius: 20,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 64,
-          child: Row(
-            children: [
-              _TabItem(
-                icon: Icons.home_outlined,
-                activeIcon: Icons.home_rounded,
-                label: loc.t('home'),
-                isActive: currentIndex == 0,
-                onTap: () => _onTabTap(0),
-              ),
-              _TabItem(
-                icon: Icons.restaurant_menu_outlined,
-                activeIcon: Icons.restaurant_menu_rounded,
-                label: loc.t('menu'),
-                isActive: currentIndex == 1,
-                onTap: () => _onTabTap(1),
-              ),
-              _TabItem(
-                icon: Icons.location_on_outlined,
-                activeIcon: Icons.location_on_rounded,
-                label: loc.t('track'),
-                isActive: currentIndex == 2,
-                onTap: () => _onTabTap(2),
-              ),
-              _TabItem(
-                icon: Icons.person_outline_rounded,
-                activeIcon: Icons.person_rounded,
-                label: loc.t('profile'),
-                isActive: currentIndex == 3,
-                onTap: () => _onTabTap(3),
-              ),
-              if (_showAdminTab)
-                _TabItem(
-                  icon: Icons.admin_panel_settings_outlined,
-                  activeIcon: Icons.admin_panel_settings_rounded,
-                  label: loc.t('admin_dashboard'),
-                  isActive: false,
-                  onTap: () => _onTabTap(4),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Reusable tab item with identical structure for all tabs
-class _TabItem extends StatelessWidget {
-  final IconData icon;
-  final IconData activeIcon;
-  final String label;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  const _TabItem({
-    required this.icon,
-    required this.activeIcon,
-    required this.label,
-    required this.isActive,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = isActive ? const Color(0xFF4A7C59) : const Color(0xFFAAAAAA);
-    return Expanded(
-      flex: 1,
-      child: GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: Icon(
-                isActive ? activeIcon : icon,
-                key: ValueKey(isActive),
-                size: 24,
-                color: color,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 11,
-                fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                color: color,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
+      bottomNavigationBar: GlobalBottomBar(
+        currentIndex: shell.currentIndex,
+        onCustomerTabTap: _onTabTap,
       ),
     );
   }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 
+import '../../providers/customer_profile_notifier.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
 import './subscription_wizard_sheet.dart';
@@ -27,9 +29,24 @@ class _SubscriptionManagementWidgetState
 
   Future<void> _loadSubscription() async {
     setState(() => _isLoading = true);
+    final profile = context.read<CustomerProfileNotifier>();
+    if (profile.customer == null) {
+      await profile.loadFromSupabase();
+    }
+    final customerId = profile.customerId;
+    if (customerId == null || customerId.trim().isEmpty) {
+      if (mounted) {
+        setState(() {
+          _subscription = null;
+          _isLoading = false;
+        });
+      }
+      return;
+    }
     final sub = await SupabaseService.instance.getActiveSubscription(
-      'guest_customer',
+      customerId,
     );
+    if (!mounted) return;
     setState(() {
       _subscription = sub;
       _isLoading = false;
@@ -91,7 +108,10 @@ class _SubscriptionManagementWidgetState
           ),
           const SizedBox(height: 14),
           GestureDetector(
-            onTap: () => showSubscriptionWizard(context),
+            onTap: () async {
+              await showSubscriptionWizard(context);
+              if (mounted) _loadSubscription();
+            },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               decoration: BoxDecoration(
@@ -360,7 +380,10 @@ class _SubscriptionManagementWidgetState
                 icon: Icons.edit_calendar_rounded,
                 label: "Edit this week's dishes",
                 color: AppTheme.deliveryBlue,
-                onTap: () => showSubscriptionWizard(context),
+                onTap: () async {
+                  await showSubscriptionWizard(context);
+                  if (mounted) _loadSubscription();
+                },
               ),
               Divider(height: 1, indent: 60, color: AppTheme.background),
 

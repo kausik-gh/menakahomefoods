@@ -1,14 +1,16 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Holds the logged-in customer's row from `customers` for reuse across screens.
+/// Holds the logged-in user's row from `users` for reuse across screens.
 class CustomerProfileNotifier extends ChangeNotifier {
   Map<String, dynamic>? customer;
   bool loading = false;
   String? errorMessage;
 
   Future<void> loadFromSupabase() async {
-    final uid = Supabase.instance.client.auth.currentUser?.id;
+    final user = Supabase.instance.client.auth.currentUser;
+    final uid = user?.id;
+    final email = user?.email?.trim().toLowerCase() ?? '';
     if (uid == null) {
       customer = null;
       notifyListeners();
@@ -18,11 +20,47 @@ class CustomerProfileNotifier extends ChangeNotifier {
     errorMessage = null;
     notifyListeners();
     try {
-      final row = await Supabase.instance.client
-          .from('customers')
-          .select()
-          .eq('id', uid)
-          .maybeSingle();
+      Map<String, dynamic>? row;
+
+      try {
+        row = await Supabase.instance.client
+            .from('users')
+            .select()
+            .eq('id', uid)
+            .maybeSingle();
+      } catch (_) {}
+
+      if (row == null) {
+        try {
+          row = await Supabase.instance.client
+              .from('users')
+              .select()
+              .eq('auth_id', uid)
+              .maybeSingle();
+        } catch (_) {}
+      }
+
+      if (row == null && email.isNotEmpty) {
+        try {
+          row = await Supabase.instance.client
+              .from('users')
+              .select()
+              .eq('email', email)
+              .maybeSingle();
+        } catch (_) {}
+      }
+
+      if (row != null &&
+          (row['auth_id'] == null || '${row['auth_id']}'.trim().isEmpty)) {
+        try {
+          await Supabase.instance.client
+              .from('users')
+              .update({'auth_id': uid})
+              .eq('id', row['id']);
+          row['auth_id'] = uid;
+        } catch (_) {}
+      }
+
       customer = row;
     } catch (e) {
       errorMessage = e.toString();
@@ -40,6 +78,7 @@ class CustomerProfileNotifier extends ChangeNotifier {
   }
 
   String? get customerId => customer?['id'] as String?;
+  String get role => (customer?['role'] as String? ?? 'customer').trim().toLowerCase();
 
   String formattedAddress() {
     final c = customer;

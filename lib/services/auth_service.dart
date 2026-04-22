@@ -43,8 +43,9 @@ class AuthService {
     }
 
     try {
-      final res = await _client.from('customers').upsert({
+      final res = await _client.from('users').upsert({
         'id': user.id,
+        'auth_id': user.id,
         'email': email.trim().toLowerCase(),
         'name': name.trim(),
         'phone': phone.trim(),
@@ -54,6 +55,7 @@ class AuthService {
         'city': city.trim(),
         'pincode': pincode.trim(),
         'language': language.trim(),
+        'role': 'customer',
       }, onConflict: 'id').select();
       // Debug tip: keeps exact insert output visible during dev troubleshooting.
       // ignore: avoid_print

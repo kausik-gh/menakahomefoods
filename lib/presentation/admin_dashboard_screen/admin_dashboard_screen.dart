@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../providers/customer_profile_notifier.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/global_bottom_bar.dart';
 import './widgets/admin_analytics_tab.dart';
 import './widgets/admin_menu_tab.dart';
 import './widgets/admin_orders_tab.dart';
@@ -72,6 +73,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
           ],
         ),
       ),
+      bottomNavigationBar: const GlobalBottomBar(currentIndex: 4),
     );
   }
 

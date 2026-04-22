@@ -56,8 +56,9 @@ class _AdminAnalyticsTabState extends State<AdminAnalyticsTab> {
 
       // Active riders
       final ridersRes = await client
-          .from('riders')
+          .from('users')
           .select('id')
+          .eq('role', 'rider')
           .eq('status', 'active');
       final activeRiders = ridersRes.length;
 
@@ -156,7 +157,7 @@ class _AdminAnalyticsTabState extends State<AdminAnalyticsTab> {
               physics: const NeverScrollableScrollPhysics(),
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
-              childAspectRatio: 1.55,
+              childAspectRatio: 1.35,
               children: [
                 _StatCard(
                   title: "Today's Orders",

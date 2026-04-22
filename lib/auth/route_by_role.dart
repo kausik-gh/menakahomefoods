@@ -4,7 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 enum SignedInRole { admin, rider, customer }
 
-/// Routes the signed-in user to admin, rider, or customer home based on email.
+/// Routes the signed-in user to admin, rider, or customer home from `users.role`.
 Future<void> routeByRole(BuildContext context) async {
   final supabase = Supabase.instance.client;
   final user = supabase.auth.currentUser;
@@ -39,63 +39,54 @@ Future<SignedInRole> resolveSignedInRole({
     throw Exception('No authenticated user found');
   }
 
-  final userId = authUser.id;
+  final userId = authUser.id.trim();
   final email = (authUser.email ?? '').trim().toLowerCase();
-
-  if (await _hasAdminRecord(supabase, email: email)) {
-    return SignedInRole.admin;
-  }
-
-  if (await _hasRoleRecord(supabase, table: 'riders', userId: userId, email: email)) {
-    return SignedInRole.rider;
-  }
-
-  return SignedInRole.customer;
-}
-
-Future<bool> _hasAdminRecord(
-  SupabaseClient client, {
-  required String email,
-}) async {
-  if (email.isEmpty) {
-    return false;
-  }
+  Map<String, dynamic>? row;
 
   try {
-    final isAdmin = await client.rpc(
-      'is_admin_email',
-      params: {'p_email': email},
-    );
-    return isAdmin == true;
-  } catch (_) {
-    return false;
-  }
-}
+    row = await supabase
+        .from('users')
+        .select('id, auth_id, email, role')
+        .eq('auth_id', userId)
+        .maybeSingle();
+  } catch (_) {}
 
-Future<bool> _hasRoleRecord(
-  SupabaseClient client, {
-  required String table,
-  required String userId,
-  required String email,
-}) async {
-  try {
-    final byId = await client.from(table).select('id').eq('id', userId).maybeSingle();
-    if (byId != null) {
-      return true;
-    }
-  } catch (_) {
-    // Ignore and continue to email-based lookup.
+  if (row == null) {
+    try {
+      row = await supabase
+          .from('users')
+          .select('id, auth_id, email, role')
+          .eq('id', userId)
+          .maybeSingle();
+    } catch (_) {}
   }
 
-  if (email.isEmpty) {
-    return false;
+  if (row == null && email.isNotEmpty) {
+    try {
+      row = await supabase
+          .from('users')
+          .select('id, auth_id, email, role')
+          .eq('email', email)
+          .maybeSingle();
+    } catch (_) {}
   }
 
-  try {
-    final byEmail = await client.from(table).select('id').eq('email', email).maybeSingle();
-    return byEmail != null;
-  } catch (_) {
-    // If role lookup is blocked or the column is unavailable, fall back gracefully.
-    return false;
+  if (row != null &&
+      (row['auth_id'] == null || '${row['auth_id']}'.trim().isEmpty)) {
+    try {
+      await supabase.from('users').update({'auth_id': userId}).eq(
+        'id',
+        row['id'],
+      );
+    } catch (_) {}
+  }
+
+  switch ((row?['role'] as String? ?? 'customer').trim().toLowerCase()) {
+    case 'admin':
+      return SignedInRole.admin;
+    case 'rider':
+      return SignedInRole.rider;
+    default:
+      return SignedInRole.customer;
   }
 }

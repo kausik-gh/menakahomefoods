@@ -37,8 +37,9 @@ class _AdminRidersTabState extends State<AdminRidersTab> {
     setState(() => _loading = true);
     try {
       final res = await SupabaseService.instance.client
-          .from('riders')
+          .from('users')
           .select()
+          .eq('role', 'rider')
           .order('created_at', ascending: false);
       if (mounted) {
         setState(() {
@@ -57,7 +58,7 @@ class _AdminRidersTabState extends State<AdminRidersTab> {
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'riders',
+          table: 'users',
           callback: (_) => _loadRiders(),
         )
         .subscribe();
@@ -79,10 +80,11 @@ class _AdminRidersTabState extends State<AdminRidersTab> {
 
   Future<void> _addRider(String name, String email, String phone) async {
     try {
-      await SupabaseService.instance.client.from('riders').insert({
+      await SupabaseService.instance.client.from('users').insert({
         'name': name,
-        'email': email,
+        'email': email.trim().toLowerCase(),
         'phone': phone,
+        'role': 'rider',
         'status': 'active',
       });
       await _loadRiders();
@@ -104,7 +106,7 @@ class _AdminRidersTabState extends State<AdminRidersTab> {
     final newStatus = currentStatus == 'active' ? 'inactive' : 'active';
     try {
       await SupabaseService.instance.client
-          .from('riders')
+          .from('users')
           .update({'status': newStatus})
           .eq('id', riderId);
       await _loadRiders();

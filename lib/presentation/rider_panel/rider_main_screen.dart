@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../providers/customer_profile_notifier.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/global_bottom_bar.dart';
 import './rider_completed_screen.dart';
 import './rider_home_screen.dart';
 import './rider_profile_screen.dart';
@@ -58,8 +59,9 @@ class _RiderMainScreenState extends State<RiderMainScreen>
     // Fetch rider info from DB (match registered email)
     try {
       final res = await SupabaseService.instance.client
-          .from('riders')
+          .from('users')
           .select()
+          .eq('role', 'rider')
           .eq('email', email)
           .maybeSingle();
 
@@ -72,8 +74,11 @@ class _RiderMainScreenState extends State<RiderMainScreen>
 
         // Set rider online
         await SupabaseService.instance.client
-            .from('riders')
-            .update({'status': 'active'})
+            .from('users')
+            .update({
+              'auth_id': Supabase.instance.client.auth.currentUser?.id,
+              'status': 'active',
+            })
             .eq('id', _riderId);
 
         // Start location broadcasting
@@ -105,7 +110,7 @@ class _RiderMainScreenState extends State<RiderMainScreen>
       // In production, replace with actual GPS coordinates
       final now = DateTime.now().toIso8601String();
       await SupabaseService.instance.client
-          .from('riders')
+          .from('users')
           .update({'location_updated_at': now, 'status': 'active'})
           .eq('id', _riderId);
     } catch (e) {
@@ -118,7 +123,7 @@ class _RiderMainScreenState extends State<RiderMainScreen>
     try {
       if (_riderId.isNotEmpty) {
         await SupabaseService.instance.client
-            .from('riders')
+            .from('users')
             .update({'status': 'inactive', 'lat': null, 'lng': null})
             .eq('id', _riderId);
       }
@@ -144,70 +149,62 @@ class _RiderMainScreenState extends State<RiderMainScreen>
   @override
   Widget build(BuildContext context) {
     final screens = [
-      RiderHomeScreen(riderName: _riderName, riderId: _riderId),
+      RiderHomeScreen(
+        riderName: _riderName,
+        riderId: _riderId,
+        riderPhone: _riderPhone,
+      ),
       RiderCompletedScreen(riderId: _riderId),
       RiderProfileScreen(
         riderName: _riderName,
         riderPhone: _riderPhone,
+        riderId: _riderId,
         onLogout: _logout,
       ),
     ];
 
     return Scaffold(
       backgroundColor: AppTheme.background,
-      body: IndexedStack(index: _currentIndex, children: screens),
-      bottomNavigationBar: _buildBottomNav(),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _buildRiderTabBar(),
+            Expanded(
+              child: IndexedStack(index: _currentIndex, children: screens),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: const GlobalBottomBar(currentIndex: 5),
     );
   }
 
-  Widget _buildBottomNav() {
+  Widget _buildRiderTabBar() {
     return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF4A7C59).withAlpha(20),
-            blurRadius: 24,
-            offset: const Offset(0, -4),
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: Row(
+        children: [
+          _TabItem(
+            icon: Icons.home_rounded,
+            label: 'Active',
+            isActive: _currentIndex == 0,
+            onTap: () => setState(() => _currentIndex = 0),
           ),
-          BoxShadow(
-            color: Colors.black.withAlpha(10),
-            blurRadius: 12,
-            offset: const Offset(0, -2),
+          _TabItem(
+            icon: Icons.check_circle_rounded,
+            label: 'Completed',
+            isActive: _currentIndex == 1,
+            onTap: () => setState(() => _currentIndex = 1),
+          ),
+          _TabItem(
+            icon: Icons.person_rounded,
+            label: 'Profile',
+            isActive: _currentIndex == 2,
+            onTap: () => setState(() => _currentIndex = 2),
           ),
         ],
-      ),
-      child: SafeArea(
-        child: SizedBox(
-          height: 64,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _TabItem(
-                icon: Icons.home_rounded,
-                label: 'Active',
-                isActive: _currentIndex == 0,
-                onTap: () => setState(() => _currentIndex = 0),
-              ),
-              _TabItem(
-                icon: Icons.check_circle_rounded,
-                label: 'Completed',
-                isActive: _currentIndex == 1,
-                onTap: () => setState(() => _currentIndex = 1),
-              ),
-              _TabItem(
-                icon: Icons.person_rounded,
-                label: 'Profile',
-                isActive: _currentIndex == 2,
-                onTap: () => setState(() => _currentIndex = 2),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

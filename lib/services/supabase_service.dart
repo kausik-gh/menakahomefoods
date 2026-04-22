@@ -8,6 +8,7 @@ class SupabaseService {
 
   /// Supabase is initialized in [main] via [Supabase.initialize].
   SupabaseClient get client => Supabase.instance.client;
+  String? lastSubscriptionError;
 
   // Save order to Supabase
   Future<String?> saveOrder({
@@ -21,24 +22,48 @@ class SupabaseService {
     required double subtotal,
     required double deliveryFee,
     required double gst,
+    double discount = 0,
+    String? couponCode,
     required double total,
+    String paymentMethod = 'gpay',
+    String paymentStatus = 'paid',
   }) async {
     try {
+      final normalizedItems = items
+          .map(
+            (item) => {
+              'dish_id': item['dish_id'],
+              'name': '${item['name'] ?? ''}'.trim(),
+              'price': (item['price'] as num?)?.toDouble() ?? 0,
+              'quantity':
+                  ((item['quantity'] as num?) ?? (item['qty'] as num?) ?? 1)
+                      .toInt(),
+              'qty':
+                  ((item['qty'] as num?) ?? (item['quantity'] as num?) ?? 1)
+                      .toInt(),
+            },
+          )
+          .toList();
       final response = await client
           .from('orders')
-          .insert({
+          .upsert({
             'customer_id': customerId,
-            'customer_name': customerName,
-            'customer_phone': customerPhone,
-            'customer_address': customerAddress,
-            'items': items,
-            'order_type': orderType,
-            'meal': meal,
+            'customer_name': customerName.trim(),
+            'customer_phone': customerPhone.trim(),
+            'customer_address': customerAddress.trim(),
+            'items': normalizedItems,
+            'order_type': orderType.trim(),
+            'meal': meal.trim(),
             'status': 'placed',
+            'picked': false,
             'subtotal': subtotal,
             'delivery_fee': deliveryFee,
             'gst': gst,
+            'discount': discount,
+            'coupon_code': (couponCode ?? '').trim(),
             'total': total,
+            'payment_method': paymentMethod.trim(),
+            'payment_status': paymentStatus.trim(),
           })
           .select('id')
           .single();
@@ -99,34 +124,41 @@ class SupabaseService {
     required Map<String, dynamic> weeklyPlan,
     required double totalAmount,
   }) async {
+    lastSubscriptionError = null;
     try {
       final response = await client
           .from('subscriptions')
-          .insert({
+          .upsert({
             'customer_id': customerId,
-            'customer_name': customerName,
-            'customer_phone': customerPhone,
+            'customer_name': customerName.trim(),
+            'customer_phone': customerPhone.trim(),
             'start_date': startDate.toIso8601String().split('T').first,
             'end_date': endDate.toIso8601String().split('T').first,
-            'meals': meals,
+            'meals': meals.map((meal) => meal.trim()).where((meal) => meal.isNotEmpty).toList(),
             'weekly_plan': weeklyPlan,
             'status': 'active',
             'total_amount': totalAmount,
+            'payment_method': 'gpay',
+            'payment_status': 'pending',
           })
           .select('id')
           .single();
       return response['id'] as String?;
     } catch (e) {
+      lastSubscriptionError = 'Supabase insert failed for `public.subscriptions`: $e';
       return null;
     }
   }
 
   Future<Map<String, dynamic>?> getActiveSubscription(String customerId) async {
     try {
+      if (customerId.trim().isEmpty) {
+        return null;
+      }
       final response = await client
           .from('subscriptions')
           .select()
-          .eq('customer_id', customerId)
+          .eq('customer_id', customerId.trim())
           .inFilter('status', ['active', 'paused'])
           .order('created_at', ascending: false)
           .limit(1)
@@ -141,10 +173,13 @@ class SupabaseService {
     String customerId,
   ) async {
     try {
+      if (customerId.trim().isEmpty) {
+        return [];
+      }
       final response = await client
           .from('subscriptions')
           .select()
-          .eq('customer_id', customerId)
+          .eq('customer_id', customerId.trim())
           .order('created_at', ascending: false);
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {

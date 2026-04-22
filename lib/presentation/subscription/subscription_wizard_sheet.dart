@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
+import '../../providers/customer_profile_notifier.dart';
 import '../../theme/app_theme.dart';
 import '../../services/supabase_service.dart';
 
@@ -85,8 +87,8 @@ const List<String> _weekDayKeys = [
 
 // ─── Subscription Wizard ─────────────────────────────────────────────────────
 
-void showSubscriptionWizard(BuildContext context) {
-  showModalBottomSheet(
+Future<void> showSubscriptionWizard(BuildContext context) {
+  return showModalBottomSheet(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
@@ -208,6 +210,35 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
     setState(() => _isLoading = true);
     HapticFeedback.mediumImpact();
 
+    final profile = context.read<CustomerProfileNotifier>();
+    if (profile.customer == null) {
+      await profile.loadFromSupabase();
+    }
+    final customer = profile.customer;
+    final customerId = customer?['id'] as String?;
+    final customerName = customer?['name'] as String? ?? '';
+    final customerPhone = customer?['phone'] as String? ?? '';
+
+    if (customerId == null ||
+        customerId.trim().isEmpty ||
+        customerName.trim().isEmpty ||
+        customerPhone.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Customer profile not loaded. Open Profile and complete your details.',
+              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+            ),
+            backgroundColor: AppTheme.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      setState(() => _isLoading = false);
+      return;
+    }
+
     // Build weekly plan for selected meals only
     final Map<String, dynamic> planToSave = {};
     for (final dayKey in _weekDayKeys) {
@@ -217,16 +248,37 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
       }
     }
 
-    await SupabaseService.instance.saveSubscription(
-      customerId: 'guest_customer',
-      customerName: 'Guest Customer',
-      customerPhone: '+91 99999 99999',
+    final subscriptionId = await SupabaseService.instance.saveSubscription(
+      customerId: customerId,
+      customerName: customerName,
+      customerPhone: customerPhone,
       startDate: _startDate,
       endDate: _endDate,
       meals: _selectedMeals.toList(),
       weeklyPlan: planToSave,
       totalAmount: _totalAmount,
     );
+
+    if (subscriptionId == null) {
+      final errorMessage =
+          SupabaseService.instance.lastSubscriptionError ??
+          'Unknown subscription creation failure.';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              errorMessage,
+              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+            ),
+            backgroundColor: AppTheme.error,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      }
+      setState(() => _isLoading = false);
+      return;
+    }
 
     setState(() {
       _isLoading = false;

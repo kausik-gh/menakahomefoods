@@ -22,7 +22,7 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   List<Map<String, dynamic>> _orders = [];
   bool _loadingOrders = false;
-  bool _isAdmin = false;
+  String _role = 'customer';
 
   @override
   void initState() {
@@ -42,7 +42,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final orders = await SupabaseService.instance.getCustomerOrders(cid);
         if (mounted) {
           setState(() {
-            _isAdmin = role == SignedInRole.admin;
+            _role = _roleName(role);
             _orders = orders;
             _loadingOrders = false;
           });
@@ -50,7 +50,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       } else {
         if (mounted) {
           setState(() {
-            _isAdmin = role == SignedInRole.admin;
+            _role = _roleName(role);
             _loadingOrders = false;
           });
         }
@@ -58,10 +58,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (_) {
       if (mounted) {
         setState(() {
-          _isAdmin = false;
+          _role = 'customer';
           _loadingOrders = false;
         });
       }
+    }
+  }
+
+  String _roleName(SignedInRole role) {
+    switch (role) {
+      case SignedInRole.admin:
+        return 'admin';
+      case SignedInRole.rider:
+        return 'rider';
+      case SignedInRole.customer:
+        return 'customer';
     }
   }
 
@@ -182,6 +193,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
             SliverToBoxAdapter(child: _buildAddressSummary(loc)),
             const SliverToBoxAdapter(child: SizedBox(height: 20)),
             SliverToBoxAdapter(child: _buildEditAddressButton(loc)),
+            if (_role == 'customer') ...[
+              const SliverToBoxAdapter(child: SizedBox(height: 16)),
+              SliverToBoxAdapter(child: _buildBecomeRiderBanner()),
+            ],
             const SliverToBoxAdapter(child: SizedBox(height: 20)),
             SliverToBoxAdapter(child: _buildMyOrdersSection(loc)),
             const SliverToBoxAdapter(child: SizedBox(height: 20)),
@@ -270,7 +285,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    _isAdmin ? 'Admin' : loc.t('customer'),
+                    _role[0].toUpperCase() + _role.substring(1),
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
@@ -422,6 +437,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 size: 20,
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBecomeRiderBanner() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF4D6),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFFFC95C)),
+        ),
+        child: Text(
+          'Become a rider',
+          style: GoogleFonts.plusJakartaSans(
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF8A5A00),
           ),
         ),
       ),
@@ -1340,7 +1378,7 @@ class _EditAddressSheetState extends State<_EditAddressSheet> {
       final uid = Supabase.instance.client.auth.currentUser?.id;
       if (uid != null) {
         await Supabase.instance.client
-            .from('customers')
+            .from('users')
             .update({
               'house_no': _houseCtrl.text.trim(),
               'street': _streetCtrl.text.trim(),

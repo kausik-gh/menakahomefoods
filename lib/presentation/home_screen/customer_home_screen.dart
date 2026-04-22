@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../core/menu_pricing.dart';
@@ -424,15 +425,28 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Left: Menaka logo
               AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
-                height: compressed ? 34 : 40,
-                child: Image.asset(
-                  'assets/images/image-1776498594905.png',
-                  height: compressed ? 34 : 40,
-                  fit: BoxFit.contain,
-                  semanticLabel: 'Menaka Home Foods logo',
+                height: compressed ? 36 : 42,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SvgPicture.asset(
+                      'assets/images/menaka_logo.svg',
+                      height: compressed ? 36 : 42,
+                      fit: BoxFit.contain,
+                      semanticsLabel: 'Menaka Home Foods logo',
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Menaka',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: compressed ? 18 : 20,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const Spacer(),
