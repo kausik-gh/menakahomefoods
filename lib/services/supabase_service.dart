@@ -100,6 +100,7 @@ class SupabaseService {
             'meal': meal.trim(),
             'status': 'placed',
             'picked': false,
+            'order_date': DateTime.now().toIso8601String().split('T').first,
             'subtotal': subtotal,
             'delivery_fee': deliveryFee,
             'gst': gst,

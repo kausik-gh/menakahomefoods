@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../services/supabase_service.dart';
 import '../../../theme/app_theme.dart';
 import '../../../widgets/map_placeholder_widget.dart';
-import '../../../services/supabase_service.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AdminOrdersTab extends StatefulWidget {
   const AdminOrdersTab({super.key});
@@ -14,30 +15,38 @@ class AdminOrdersTab extends StatefulWidget {
 
 class _AdminOrdersTabState extends State<AdminOrdersTab>
     with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-  List<Map<String, dynamic>> _oneTimeOrders = [];
-  List<Map<String, dynamic>> _subscriptions = [];
-  List<Map<String, dynamic>> _riders = [];
+  late final TabController _tabController;
+  final Set<String> _selectedOrderIds = <String>{};
+  final List<RealtimeChannel> _channels = <RealtimeChannel>[];
+
+  List<Map<String, dynamic>> _oneTimeOrders = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _subscriptions = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _tomorrowOrders = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _riders = <Map<String, dynamic>>[];
   bool _loading = true;
 
-  final List<String> _statusOptions = [
+  static const List<String> _statusOptions = <String>[
     'placed',
     'confirmed',
     'preparing',
     'out_for_delivery',
     'delivered',
+    'cancelled',
   ];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadData();
-    _subscribeToOrders();
+    _subscribeToRealtime();
   }
 
   @override
   void dispose() {
+    for (final channel in _channels) {
+      channel.unsubscribe();
+    }
     _tabController.dispose();
     super.dispose();
   }
@@ -46,112 +55,185 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
     setState(() => _loading = true);
     try {
       final client = SupabaseService.instance.client;
-      final ordersRes = await client
-          .from('orders')
-          .select()
-          .order('created_at', ascending: false)
-          .limit(50);
-      final subsRes = await client
-          .from('subscriptions')
-          .select()
-          .inFilter('status', ['active', 'paused'])
-          .order('created_at', ascending: false);
-      final ridersRes = await client
-          .from('users')
-          .select()
-          .eq('role', 'rider')
-          .eq('status', 'active');
+      final now = DateTime.now();
+      final targetDate = _operationalTomorrowDate(now);
+      final targetDateKey = _dateKey(targetDate);
+
+      final results = await Future.wait<dynamic>([
+        client
+            .from('orders')
+            .select()
+            .order('order_date', ascending: false)
+            .order('created_at', ascending: false)
+            .limit(300),
+        client
+            .from('subscriptions')
+            .select()
+            .inFilter('status', <String>['active', 'paused'])
+            .order('created_at', ascending: false),
+        client
+            .from('users')
+            .select()
+            .eq('role', 'rider')
+            .eq('status', 'active')
+            .order('name'),
+      ]);
+
+      final allOrders = List<Map<String, dynamic>>.from(results[0] as List);
+      final oneTimeOrders = allOrders
+          .where((order) => (order['order_type'] as String? ?? 'one_time') != 'subscription')
+          .toList();
+      final tomorrowOrders = allOrders
+          .where(
+            (order) =>
+                (order['order_type'] as String? ?? '') == 'subscription' &&
+                (order['order_date'] as String? ?? '') == targetDateKey,
+          )
+          .toList();
+
+      final assignableIds = <String>{
+        ...oneTimeOrders.where(_isAssignableOrder).map(_orderIdOf),
+        ...tomorrowOrders.where(_isAssignableOrder).map(_orderIdOf),
+      };
+
+      if (!mounted) return;
+
+      setState(() {
+        _oneTimeOrders = oneTimeOrders;
+        _subscriptions = List<Map<String, dynamic>>.from(results[1] as List);
+        _tomorrowOrders = tomorrowOrders;
+        _riders = List<Map<String, dynamic>>.from(results[2] as List);
+        _selectedOrderIds.removeWhere((id) => !assignableIds.contains(id));
+        _loading = false;
+      });
+    } catch (_) {
       if (mounted) {
-        setState(() {
-          _oneTimeOrders = List<Map<String, dynamic>>.from(ordersRes);
-          _subscriptions = List<Map<String, dynamic>>.from(subsRes);
-          _riders = List<Map<String, dynamic>>.from(ridersRes);
-          _loading = false;
-        });
+        setState(() => _loading = false);
       }
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
     }
   }
 
-  void _subscribeToOrders() {
-    SupabaseService.instance.client
-        .channel('admin_orders_realtime')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'orders',
-          callback: (_) => _loadData(),
-        )
-        .subscribe();
+  void _subscribeToRealtime() {
+    final client = SupabaseService.instance.client;
+
+    _channels.add(
+      client
+          .channel('admin_orders_realtime')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'orders',
+            callback: (_) => _loadData(),
+          )
+          .subscribe(),
+    );
+
+    _channels.add(
+      client
+          .channel('admin_subscriptions_realtime')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'subscriptions',
+            callback: (_) => _loadData(),
+          )
+          .subscribe(),
+    );
+
+    _channels.add(
+      client
+          .channel('admin_riders_realtime_orders_tab')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'users',
+            callback: (_) => _loadData(),
+          )
+          .subscribe(),
+    );
   }
 
   Future<void> _updateOrderStatus(String orderId, String newStatus) async {
     try {
       await SupabaseService.instance.client
           .from('orders')
-          .update({'status': newStatus})
+          .update(<String, dynamic>{'status': newStatus})
           .eq('id', orderId);
       await _loadData();
-    } catch (e) {
-      // silent
-    }
+    } catch (_) {}
   }
 
-  Future<void> _assignRider(String orderId, Map<String, dynamic> rider) async {
+  Future<void> _assignOrdersToRider(
+    List<String> orderIds,
+    Map<String, dynamic> rider,
+  ) async {
+    if (orderIds.isEmpty) return;
     try {
       await SupabaseService.instance.client
           .from('orders')
-          .update({
+          .update(<String, dynamic>{
             'status': 'out_for_delivery',
             'picked': true,
             'rider_id': rider['id'],
             'rider_name': rider['name'],
             'rider_phone': rider['phone'],
           })
-          .eq('id', orderId);
+          .inFilter('id', orderIds);
+
+      if (!mounted) return;
+
+      setState(() => _selectedOrderIds.removeAll(orderIds));
       await _loadData();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '🛵 ${rider['name']} assigned successfully!',
-              style: GoogleFonts.plusJakartaSans(
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${orderIds.length} order${orderIds.length == 1 ? '' : 's'} assigned to ${rider['name']}',
+            style: GoogleFonts.plusJakartaSans(
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
             ),
-            backgroundColor: AppTheme.success,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
           ),
-        );
-      }
-    } catch (e) {
-      // silent
-    }
+          backgroundColor: AppTheme.success,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+    } catch (_) {}
   }
 
-  void _showAssignRiderSheet(String orderId) {
-    showModalBottomSheet(
+  void _showAssignRiderSheet(List<String> orderIds) {
+    showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AssignRiderSheet(
         riders: _riders,
+        selectedOrderCount: orderIds.length,
         onAssign: (rider) {
           Navigator.pop(context);
-          _assignRider(orderId, rider);
+          _assignOrdersToRider(orderIds, rider);
         },
       ),
     );
   }
 
-  String _formatStatus(String s) {
-    switch (s) {
+  void _toggleOrderSelection(String orderId) {
+    setState(() {
+      if (_selectedOrderIds.contains(orderId)) {
+        _selectedOrderIds.remove(orderId);
+      } else {
+        _selectedOrderIds.add(orderId);
+      }
+    });
+  }
+
+  String _formatStatus(String status) {
+    switch (status) {
       case 'placed':
         return 'Placed';
       case 'confirmed':
@@ -162,13 +244,15 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
         return 'Out for Delivery';
       case 'delivered':
         return 'Delivered';
+      case 'cancelled':
+        return 'Cancelled';
       default:
-        return s;
+        return status;
     }
   }
 
-  Color _statusColor(String s) {
-    switch (s) {
+  Color _statusColor(String status) {
+    switch (status) {
       case 'placed':
         return const Color(0xFF2563EB);
       case 'confirmed':
@@ -179,103 +263,334 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
         return AppTheme.primary;
       case 'delivered':
         return AppTheme.success;
+      case 'cancelled':
+        return AppTheme.error;
       default:
         return AppTheme.textMuted;
     }
   }
 
+  bool _isAssignableOrder(Map<String, dynamic> order) {
+    final status = order['status'] as String? ?? 'placed';
+    return status != 'delivered' && status != 'cancelled';
+  }
+
+  bool _isPendingOrder(Map<String, dynamic> order) {
+    final status = order['status'] as String? ?? 'placed';
+    return status != 'delivered' && status != 'cancelled';
+  }
+
+  String _orderIdOf(Map<String, dynamic> order) {
+    return order['id'] as String? ?? '';
+  }
+
+  DateTime _operationalTomorrowDate(DateTime now) {
+    final today = DateTime(now.year, now.month, now.day);
+    if (now.hour >= 6) {
+      return today;
+    }
+    return today.add(const Duration(days: 1));
+  }
+
+  String _dateKey(DateTime date) {
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '${date.year}-$month-$day';
+  }
+
+  DateTime? _parseDateValue(String? value) {
+    if (value == null || value.isEmpty) return null;
+    return DateTime.tryParse(value);
+  }
+
+  String _formatPrettyDate(DateTime date) {
+    const months = <String>[
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+
+  String _mealLabel(String meal) {
+    switch (meal) {
+      case 'breakfast':
+        return 'Breakfast';
+      case 'lunch':
+        return 'Lunch';
+      case 'dinner':
+        return 'Dinner';
+      case 'snacks':
+        return 'Snacks';
+      case 'beverages':
+        return 'Beverages';
+      default:
+        return meal;
+    }
+  }
+
+  String _mealEmoji(String meal) {
+    switch (meal) {
+      case 'breakfast':
+        return 'Sunrise';
+      case 'lunch':
+        return 'Lunch';
+      case 'dinner':
+        return 'Dinner';
+      case 'snacks':
+        return 'Snacks';
+      case 'beverages':
+        return 'Drinks';
+      default:
+        return 'Meal';
+    }
+  }
+
+  String _timeAgo(String isoString) {
+    if (isoString.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(isoString).toLocal();
+      final diff = DateTime.now().difference(dt);
+      if (diff.inMinutes < 1) return 'Just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      return '${diff.inDays}d ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _itemsSummary(List<dynamic> items) {
+    if (items.isEmpty) return 'No items';
+    return items
+        .map((item) {
+          if (item is! Map) return '';
+          final name = '${item['name'] ?? ''}'.trim();
+          final quantity = ((item['quantity'] as num?) ?? (item['qty'] as num?) ?? 1).toInt();
+          return '$name x$quantity';
+        })
+        .where((item) => item.isNotEmpty)
+        .join(', ');
+  }
+
+  String _subscriptionDishName(Map<String, dynamic> sub, DateTime targetDate) {
+    final weeklyPlan = Map<String, dynamic>.from(
+      sub['weekly_plan'] as Map? ?? <String, dynamic>{},
+    );
+    final dayPlan = Map<String, dynamic>.from(
+      weeklyPlan[_dayKey(targetDate)] as Map? ?? <String, dynamic>{},
+    );
+    final meals = (sub['meals'] as List?)?.cast<String>() ?? <String>[];
+    return meals
+        .map((meal) => '${_mealLabel(meal)}: ${dayPlan[meal] ?? 'Not assigned'}')
+        .join('  |  ');
+  }
+
+  String _dayKey(DateTime date) {
+    const days = <String>['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    return days[date.weekday - 1];
+  }
+
+  bool _isBreakfastReady(Map<String, dynamic> order, DateTime now, DateTime targetDate) {
+    final orderDate = _parseDateValue(order['order_date'] as String?);
+    final today = DateTime(now.year, now.month, now.day);
+    return (order['order_type'] as String? ?? '') == 'subscription' &&
+        (order['meal'] as String? ?? '') == 'breakfast' &&
+        orderDate != null &&
+        _dateKey(orderDate) == _dateKey(today) &&
+        _dateKey(targetDate) == _dateKey(today) &&
+        now.hour >= 6 &&
+        _isPendingOrder(order);
+  }
+
+  Map<String, Map<String, int>> _buildTomorrowCookSummary(List<Map<String, dynamic>> orders) {
+    final summary = <String, Map<String, int>>{};
+    for (final order in orders.where(_isPendingOrder)) {
+      final meal = order['meal'] as String? ?? 'lunch';
+      summary.putIfAbsent(meal, () => <String, int>{});
+      final items = List<dynamic>.from(order['items'] as List? ?? <dynamic>[]);
+      for (final rawItem in items) {
+        if (rawItem is! Map) continue;
+        final name = '${rawItem['name'] ?? 'Unnamed item'}'.trim();
+        final quantity = ((rawItem['quantity'] as num?) ?? (rawItem['qty'] as num?) ?? 1).toInt();
+        summary[meal]![name] = (summary[meal]![name] ?? 0) + quantity;
+      }
+    }
+    return summary;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          color: Colors.white,
-          child: TabBar(
-            controller: _tabController,
-            labelColor: AppTheme.primary,
-            unselectedLabelColor: AppTheme.textMuted,
-            indicatorColor: AppTheme.primary,
-            indicatorWeight: 2.5,
-            labelStyle: GoogleFonts.plusJakartaSans(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
+    return Stack(
+      children: <Widget>[
+        Column(
+          children: <Widget>[
+            Container(
+              color: Colors.white,
+              child: TabBar(
+                controller: _tabController,
+                labelColor: AppTheme.primary,
+                unselectedLabelColor: AppTheme.textMuted,
+                indicatorColor: AppTheme.primary,
+                indicatorWeight: 2.5,
+                labelStyle: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+                unselectedLabelStyle: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+                tabs: const <Tab>[
+                  Tab(text: 'One-time Orders'),
+                  Tab(text: 'Subscriptions'),
+                  Tab(text: 'Tomorrow Orders'),
+                ],
+              ),
             ),
-            unselectedLabelStyle: GoogleFonts.plusJakartaSans(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
+            Expanded(
+              child: _loading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: AppTheme.primary),
+                    )
+                  : TabBarView(
+                      controller: _tabController,
+                      children: <Widget>[
+                        _buildOneTimeOrders(),
+                        _buildSubscriptions(),
+                        _buildTomorrowOrders(),
+                      ],
+                    ),
             ),
-            tabs: const [
-              Tab(text: 'One-time Orders'),
-              Tab(text: 'Subscriptions'),
+          ],
+        ),
+        if (_selectedOrderIds.isNotEmpty) _buildBulkAssignBar(),
+      ],
+    );
+  }
+
+  Widget _buildBulkAssignBar() {
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: 16,
+      child: SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.textPrimary,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(40),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      '${_selectedOrderIds.length} selected',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                    Text(
+                      'Assign mixed one-time and subscription orders together.',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        color: Colors.white.withAlpha(190),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              TextButton(
+                onPressed: () => setState(() => _selectedOrderIds.clear()),
+                child: Text(
+                  'Clear',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () => _showAssignRiderSheet(_selectedOrderIds.toList()),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Text(
+                  'Assign Rider',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
             ],
           ),
         ),
-        Expanded(
-          child: _loading
-              ? const Center(
-                  child: CircularProgressIndicator(color: AppTheme.primary),
-                )
-              : TabBarView(
-                  controller: _tabController,
-                  children: [_buildOneTimeOrders(), _buildSubscriptions()],
-                ),
-        ),
-      ],
+      ),
     );
   }
 
   Widget _buildOneTimeOrders() {
     if (_oneTimeOrders.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.receipt_long_outlined,
-              size: 48,
-              color: AppTheme.textMuted,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No orders yet',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary,
-              ),
-            ),
-          ],
-        ),
+      return _buildEmptyState(
+        icon: Icons.receipt_long_outlined,
+        title: 'No orders yet',
+        subtitle: 'New one-time customer orders will appear here.',
       );
     }
+
     return RefreshIndicator(
       onRefresh: _loadData,
       color: AppTheme.primary,
       child: ListView.builder(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
         physics: const BouncingScrollPhysics(),
         itemCount: _oneTimeOrders.length,
-        itemBuilder: (context, i) => _buildOrderCard(_oneTimeOrders[i]),
+        itemBuilder: (context, index) => _buildOneTimeOrderCard(_oneTimeOrders[index]),
       ),
     );
   }
 
-  Widget _buildOrderCard(Map<String, dynamic> order) {
+  Widget _buildOneTimeOrderCard(Map<String, dynamic> order) {
+    final orderId = _orderIdOf(order);
     final status = order['status'] as String? ?? 'placed';
     final statusColor = _statusColor(status);
-    final items = order['items'] as List? ?? [];
-    final itemsSummary = items
-        .take(2)
-        .map((it) => '${it['name'] ?? ''} ×${it['quantity'] ?? 1}')
-        .join(', ');
-    final total = (order['total'] as num?)?.toDouble() ?? 0.0;
+    final items = List<dynamic>.from(order['items'] as List? ?? <dynamic>[]);
+    final total = (order['total'] as num?)?.toDouble() ?? 0;
     final customerName = order['customer_name'] as String? ?? 'Customer';
-    final createdAt = order['created_at'] as String? ?? '';
-    final timeAgo = _timeAgo(createdAt);
-    final orderId = order['id'] as String? ?? '';
-    final shortId = orderId.length > 8
-        ? orderId.substring(0, 8).toUpperCase()
-        : orderId.toUpperCase();
+    final timeAgo = _timeAgo(order['created_at'] as String? ?? '');
+    final shortId = orderId.length > 8 ? orderId.substring(0, 8).toUpperCase() : orderId.toUpperCase();
+    final selected = _selectedOrderIds.contains(orderId);
+    final assignable = _isAssignableOrder(order);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -283,20 +598,20 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: AppTheme.cardShadow,
-        border: Border.all(color: statusColor.withAlpha(30), width: 1),
+        border: Border.all(
+          color: selected ? AppTheme.primary : statusColor.withAlpha(28),
+          width: selected ? 1.5 : 1,
+        ),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+          children: <Widget>[
             Row(
-              children: [
+              children: <Widget>[
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: AppTheme.surfaceVariant,
                     borderRadius: BorderRadius.circular(6),
@@ -319,11 +634,30 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                   ),
                 ),
                 const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
+                if (assignable)
+                  InkWell(
+                    onTap: () => _toggleOrderSelection(orderId),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: selected ? AppTheme.primary : Colors.white,
+                        border: Border.all(
+                          color: selected ? AppTheme.primary : AppTheme.textMuted.withAlpha(90),
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Icon(
+                        selected ? Icons.check_rounded : Icons.add_rounded,
+                        size: 16,
+                        color: selected ? Colors.white : AppTheme.textMuted,
+                      ),
+                    ),
                   ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: statusColor.withAlpha(20),
                     borderRadius: BorderRadius.circular(8),
@@ -341,7 +675,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
             ),
             const SizedBox(height: 10),
             Row(
-              children: [
+              children: <Widget>[
                 const Icon(
                   Icons.person_outline_rounded,
                   size: 14,
@@ -360,7 +694,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                   ),
                 ),
                 Text(
-                  '₹${total.toInt()}',
+                  'Rs ${total.toStringAsFixed(0)}',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
@@ -369,21 +703,19 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                 ),
               ],
             ),
-            if (itemsSummary.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                itemsSummary,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 12,
-                  color: AppTheme.textSecondary,
-                ),
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
+            const SizedBox(height: 4),
+            Text(
+              _itemsSummary(items),
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                color: AppTheme.textSecondary,
               ),
-            ],
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+            ),
             const SizedBox(height: 12),
             Row(
-              children: [
+              children: <Widget>[
                 Expanded(
                   child: _StatusDropdown(
                     currentStatus: status,
@@ -392,44 +724,16 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                     statusColor: _statusColor,
                     onChanged: (newStatus) {
                       if (newStatus == 'out_for_delivery') {
-                        _showAssignRiderSheet(orderId);
+                        _showAssignRiderSheet(<String>[orderId]);
                       } else {
                         _updateOrderStatus(orderId, newStatus);
                       }
                     },
                   ),
                 ),
-                if (order['rider_name'] != null) ...[
+                if (order['rider_name'] != null) ...<Widget>[
                   const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.successLight,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.delivery_dining_rounded,
-                          size: 12,
-                          color: AppTheme.success,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          order['rider_name'] as String,
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: AppTheme.success,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  _RiderPill(name: order['rider_name'] as String),
                 ],
               ],
             ),
@@ -441,174 +745,469 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
 
   Widget _buildSubscriptions() {
     if (_subscriptions.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.repeat_rounded,
-              size: 48,
-              color: AppTheme.textMuted,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No active subscriptions',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary,
-              ),
-            ),
-          ],
-        ),
+      return _buildEmptyState(
+        icon: Icons.repeat_rounded,
+        title: 'No active subscriptions',
+        subtitle: 'Active and paused subscriptions will appear here.',
       );
     }
 
-    final today = DateTime.now();
-    final dayKey = _dayKey(today);
+    final targetDate = _operationalTomorrowDate(DateTime.now());
 
-    // Group by meal type
-    final Map<String, List<Map<String, dynamic>>> grouped = {
-      'breakfast': [],
-      'lunch': [],
-      'dinner': [],
-    };
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      color: AppTheme.primary,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+        physics: const BouncingScrollPhysics(),
+        itemCount: _subscriptions.length,
+        itemBuilder: (context, index) {
+          final sub = _subscriptions[index];
+          final status = sub['status'] as String? ?? 'active';
+          final statusColor = status == 'paused'
+              ? AppTheme.warning
+              : status == 'cancelled'
+                  ? AppTheme.error
+                  : AppTheme.success;
+          final startDate = _parseDateValue(sub['start_date'] as String?);
+          final endDate = _parseDateValue(sub['end_date'] as String?);
 
-    for (final sub in _subscriptions) {
-      final meals = (sub['meals'] as List?)?.cast<String>() ?? [];
-      final weeklyPlan = sub['weekly_plan'] as Map<String, dynamic>? ?? {};
-      final dayPlan = weeklyPlan[dayKey] as Map<String, dynamic>? ?? {};
-      for (final meal in meals) {
-        if (grouped.containsKey(meal)) {
-          grouped[meal]!.add({
-            ...sub,
-            '_dish': dayPlan[meal] ?? 'Not assigned',
-          });
-        }
-      }
+          return Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: AppTheme.cardShadow,
+              border: Border.all(color: statusColor.withAlpha(25)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: Text(
+                        sub['customer_name'] as String? ?? 'Customer',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withAlpha(20),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        status[0].toUpperCase() + status.substring(1),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: statusColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _subscriptionDishName(sub, targetDate),
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12,
+                    color: AppTheme.primary,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    _InfoChip(
+                      icon: Icons.calendar_today_rounded,
+                      label:
+                          '${startDate != null ? _formatPrettyDate(startDate) : '-'} to ${endDate != null ? _formatPrettyDate(endDate) : '-'}',
+                    ),
+                    _InfoChip(
+                      icon: Icons.restaurant_menu_rounded,
+                      label: ((sub['meals'] as List?)?.cast<String>() ?? <String>[])
+                          .map(_mealLabel)
+                          .join(', '),
+                    ),
+                    _InfoChip(
+                      icon: Icons.schedule_rounded,
+                      label: 'Next plan for ${_formatPrettyDate(targetDate)}',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTomorrowOrders() {
+    final now = DateTime.now();
+    final targetDate = _operationalTomorrowDate(now);
+    final summary = _buildTomorrowCookSummary(_tomorrowOrders);
+    final groupedOrders = <String, List<Map<String, dynamic>>>{};
+
+    for (final order in _tomorrowOrders) {
+      final meal = order['meal'] as String? ?? 'lunch';
+      groupedOrders.putIfAbsent(meal, () => <Map<String, dynamic>>[]).add(order);
     }
 
     return RefreshIndicator(
       onRefresh: _loadData,
       color: AppTheme.primary,
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
         physics: const BouncingScrollPhysics(),
-        children: [
-          _buildMealGroup('🌅 Breakfast', grouped['breakfast']!),
-          _buildMealGroup('☀️ Lunch', grouped['lunch']!),
-          _buildMealGroup('🌙 Dinner', grouped['dinner']!),
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: AppTheme.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    const Icon(
+                      Icons.inventory_2_rounded,
+                      color: AppTheme.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Tomorrow Orders',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        _formatPrettyDate(targetDate),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.primary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  now.hour >= 6
+                      ? 'Breakfast subscriptions for today are ready to be picked up.'
+                      : 'This view shows subscription cooking demand for the next operating day.',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          if (_tomorrowOrders.isEmpty)
+            _buildEmptyState(
+              icon: Icons.local_dining_outlined,
+              title: 'No subscription orders scheduled',
+              subtitle: 'Run the cron-backed generator and active subscriptions will appear here.',
+            )
+          else ...<Widget>[
+            ...summary.entries.map((entry) => _buildTomorrowSummaryCard(entry.key, entry.value, groupedOrders[entry.key]?.length ?? 0)),
+            const SizedBox(height: 8),
+            ...groupedOrders.entries.map((entry) => _buildTomorrowMealOrders(entry.key, entry.value, now, targetDate)),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildMealGroup(String title, List<Map<String, dynamic>> entries) {
-    if (entries.isEmpty) return const SizedBox.shrink();
+  Widget _buildTomorrowSummaryCard(String meal, Map<String, int> items, int orderCount) {
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: AppTheme.cardShadow,
+        border: Border.all(color: AppTheme.primary.withAlpha(16)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  _mealLabel(meal),
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '$orderCount order${orderCount == 1 ? '' : 's'}',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...items.entries.map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      item.key,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surfaceVariant,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${item.value}',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTomorrowMealOrders(
+    String meal,
+    List<Map<String, dynamic>> orders,
+    DateTime now,
+    DateTime targetDate,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+      children: <Widget>[
         Padding(
-          padding: const EdgeInsets.only(bottom: 8, top: 4),
+          padding: const EdgeInsets.only(top: 4, bottom: 8),
           child: Text(
-            title,
+            '${_mealEmoji(meal)} ${_mealLabel(meal)}',
             style: GoogleFonts.plusJakartaSans(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
               color: AppTheme.textPrimary,
             ),
           ),
         ),
-        ...entries.map((e) => _buildSubscriptionCard(e)),
-        const SizedBox(height: 12),
+        ...orders.map((order) => _buildTomorrowOrderCard(order, now, targetDate)),
+        const SizedBox(height: 8),
       ],
     );
   }
 
-  Widget _buildSubscriptionCard(Map<String, dynamic> sub) {
-    final name = sub['customer_name'] as String? ?? 'Customer';
-    final address = sub['customer_address'] as String? ?? '';
-    final dish = sub['_dish'] as String? ?? 'Not assigned';
+  Widget _buildTomorrowOrderCard(
+    Map<String, dynamic> order,
+    DateTime now,
+    DateTime targetDate,
+  ) {
+    final orderId = _orderIdOf(order);
+    final selected = _selectedOrderIds.contains(orderId);
+    final assignable = _isAssignableOrder(order);
+    final status = order['status'] as String? ?? 'placed';
+    final statusColor = _statusColor(status);
+    final items = List<dynamic>.from(order['items'] as List? ?? <dynamic>[]);
+    final ready = _isBreakfastReady(order, now, targetDate);
+    final riderName = order['rider_name'] as String?;
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: AppTheme.cardShadow,
-        border: Border.all(color: AppTheme.primary.withAlpha(20), width: 1),
+        border: Border.all(
+          color: selected ? AppTheme.primary : AppTheme.primary.withAlpha(18),
+          width: selected ? 1.5 : 1,
+        ),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: AppTheme.primaryContainer,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.person_rounded,
-              size: 18,
-              color: AppTheme.primary,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  order['customer_name'] as String? ?? 'Customer',
                   style: GoogleFonts.plusJakartaSans(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
                     color: AppTheme.textPrimary,
                   ),
                 ),
-                Text(
-                  dish,
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 12,
-                    color: AppTheme.primary,
+              ),
+              if (assignable)
+                InkWell(
+                  onTap: () => _toggleOrderSelection(orderId),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: selected ? AppTheme.primary : Colors.white,
+                      border: Border.all(
+                        color: selected ? AppTheme.primary : AppTheme.textMuted.withAlpha(90),
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Icon(
+                      selected ? Icons.check_rounded : Icons.add_rounded,
+                      size: 16,
+                      color: selected ? Colors.white : AppTheme.textMuted,
+                    ),
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
-                if (address.isNotEmpty)
-                  Text(
-                    address,
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _itemsSummary(items),
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 13,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: statusColor.withAlpha(18),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _formatStatus(status),
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: statusColor,
+                  ),
+                ),
+              ),
+              if (ready)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.successLight,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'Ready to be picked up',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11,
-                      color: AppTheme.textMuted,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.success,
                     ),
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
                   ),
-              ],
-            ),
+                ),
+              if (riderName != null) _RiderPill(name: riderName),
+            ],
           ),
         ],
       ),
     );
   }
 
-  String _dayKey(DateTime date) {
-    const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-    return days[date.weekday - 1];
-  }
-
-  String _timeAgo(String isoString) {
-    if (isoString.isEmpty) return '';
-    try {
-      final dt = DateTime.parse(isoString).toLocal();
-      final diff = DateTime.now().difference(dt);
-      if (diff.inMinutes < 1) return 'Just now';
-      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-      if (diff.inHours < 24) return '${diff.inHours}h ago';
-      return '${diff.inDays}d ago';
-    } catch (_) {
-      return '';
-    }
+  Widget _buildEmptyState({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(
+              icon,
+              size: 48,
+              color: AppTheme.textMuted,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                color: AppTheme.textMuted,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -654,21 +1253,23 @@ class _StatusDropdown extends StatelessWidget {
             fontWeight: FontWeight.w600,
             color: statusColor(currentStatus),
           ),
-          items: options.map((s) {
+          items: options.map((status) {
             return DropdownMenuItem<String>(
-              value: s,
+              value: status,
               child: Text(
-                formatStatus(s),
+                formatStatus(status),
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: statusColor(s),
+                  color: statusColor(status),
                 ),
               ),
             );
           }).toList(),
-          onChanged: (val) {
-            if (val != null && val != currentStatus) onChanged(val);
+          onChanged: (value) {
+            if (value != null && value != currentStatus) {
+              onChanged(value);
+            }
           },
         ),
       ),
@@ -678,9 +1279,14 @@ class _StatusDropdown extends StatelessWidget {
 
 class _AssignRiderSheet extends StatefulWidget {
   final List<Map<String, dynamic>> riders;
+  final int selectedOrderCount;
   final ValueChanged<Map<String, dynamic>> onAssign;
 
-  const _AssignRiderSheet({required this.riders, required this.onAssign});
+  const _AssignRiderSheet({
+    required this.riders,
+    required this.selectedOrderCount,
+    required this.onAssign,
+  });
 
   @override
   State<_AssignRiderSheet> createState() => _AssignRiderSheetState();
@@ -698,7 +1304,7 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(
-        children: [
+        children: <Widget>[
           const SizedBox(height: 8),
           Container(
             width: 40,
@@ -711,21 +1317,30 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
             child: Row(
-              children: [
-                Text(
-                  'Assign Rider',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary,
-                  ),
+              children: <Widget>[
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'Assign Rider',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      '${widget.selectedOrderCount} order${widget.selectedOrderCount == 1 ? '' : 's'} selected',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppTheme.primaryContainer,
                     borderRadius: BorderRadius.circular(8),
@@ -742,7 +1357,6 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
               ],
             ),
           ),
-          // Mini Map
           Container(
             height: 160,
             margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -771,10 +1385,10 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                 : ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: widget.riders.length,
-                    itemBuilder: (context, i) {
-                      final rider = widget.riders[i];
+                    itemBuilder: (context, index) {
+                      final rider = widget.riders[index];
                       final riderId = rider['id'] as String;
-                      final isSelected = _selectedRiderId == riderId;
+                      final selected = _selectedRiderId == riderId;
                       return GestureDetector(
                         onTap: () => setState(() => _selectedRiderId = riderId),
                         child: AnimatedContainer(
@@ -782,41 +1396,35 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: isSelected
-                                ? AppTheme.primaryContainer
-                                : Colors.white,
+                            color: selected ? AppTheme.primaryContainer : Colors.white,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                              color: isSelected
+                              color: selected
                                   ? AppTheme.primary
                                   : AppTheme.primary.withAlpha(20),
-                              width: isSelected ? 2 : 1,
+                              width: selected ? 2 : 1,
                             ),
                           ),
                           child: Row(
-                            children: [
+                            children: <Widget>[
                               Container(
                                 width: 40,
                                 height: 40,
                                 decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? AppTheme.primary
-                                      : AppTheme.surfaceVariant,
+                                  color: selected ? AppTheme.primary : AppTheme.surfaceVariant,
                                   shape: BoxShape.circle,
                                 ),
                                 child: Icon(
                                   Icons.delivery_dining_rounded,
                                   size: 20,
-                                  color: isSelected
-                                      ? Colors.white
-                                      : AppTheme.textMuted,
+                                  color: selected ? Colors.white : AppTheme.textMuted,
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
+                                  children: <Widget>[
                                     Text(
                                       rider['name'] as String? ?? '',
                                       style: GoogleFonts.plusJakartaSans(
@@ -836,10 +1444,7 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                                 ),
                               ),
                               Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
-                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                 decoration: BoxDecoration(
                                   color: AppTheme.successLight,
                                   borderRadius: BorderRadius.circular(6),
@@ -853,7 +1458,7 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                                   ),
                                 ),
                               ),
-                              if (isSelected) ...[
+                              if (selected) ...<Widget>[
                                 const SizedBox(width: 8),
                                 const Icon(
                                   Icons.check_circle_rounded,
@@ -883,7 +1488,7 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                     ? null
                     : () {
                         final rider = widget.riders.firstWhere(
-                          (r) => r['id'] == _selectedRiderId,
+                          (row) => row['id'] == _selectedRiderId,
                         );
                         widget.onAssign(rider);
                       },
@@ -904,6 +1509,78 @@ class _AssignRiderSheetState extends State<_AssignRiderSheet> {
                   ),
                 ),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RiderPill extends StatelessWidget {
+  final String name;
+
+  const _RiderPill({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: AppTheme.successLight,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          const Icon(
+            Icons.delivery_dining_rounded,
+            size: 12,
+            color: AppTheme.success,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            name,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.success,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 13, color: AppTheme.textMuted),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondary,
             ),
           ),
         ],
