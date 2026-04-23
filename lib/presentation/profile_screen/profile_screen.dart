@@ -76,6 +76,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  String _statusLabel(String status, AppLocalizations loc) {
+    switch (status) {
+      case 'placed':
+        return loc.t('status_placed');
+      case 'confirmed':
+        return loc.t('status_confirmed');
+      case 'preparing':
+        return loc.t('status_preparing');
+      case 'out_for_delivery':
+        return loc.t('status_out_for_delivery');
+      case 'delivered':
+        return loc.t('status_delivered');
+      case 'cancelled':
+        return loc.t('status_cancelled');
+      default:
+        return status;
+    }
+  }
+
   String _getInitials() {
     final name =
         context.read<CustomerProfileNotifier>().customer?['name'] as String? ??
@@ -124,6 +143,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _OrderDetailModal(order: order, loc: loc),
+    );
+  }
+
+  void _showOrderHistory(AppLocalizations loc) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _OrderHistoryModal(
+        orders: _orders,
+        loc: loc,
+        onOrderTap: (order) => _showOrderDetail(order, loc),
+      ),
     );
   }
 
@@ -467,6 +499,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildMyOrdersSection(AppLocalizations loc) {
+    final latestOrder = _orders.isNotEmpty ? _orders.first : null;
+    final latestStatus = latestOrder?['status'] as String? ?? '';
+    final latestTotal = (latestOrder?['total'] as num?)?.toDouble() ?? 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -509,18 +545,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
               )
-            : _orders.isEmpty
-            ? _buildEmptyOrders(loc)
-            : SizedBox(
-                height: 160,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _orders.length,
-                  itemBuilder: (context, index) => _OrderCard(
-                    order: _orders[index],
-                    loc: loc,
-                    onTap: () => _showOrderDetail(_orders[index], loc),
+            : Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: GestureDetector(
+                  onTap: () => _showOrderHistory(loc),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: AppTheme.cardShadow,
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: AppTheme.primary.withAlpha(20),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(
+                            Icons.history_rounded,
+                            color: AppTheme.primary,
+                            size: 22,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _orders.isEmpty
+                                    ? loc.t('no_orders_yet')
+                                    : '${_orders.length} ${loc.t('orders')}',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _orders.isEmpty
+                                    ? loc.t('place_first_order')
+                                    : '${_statusLabel(latestStatus, loc)} - \u20B9${latestTotal.toStringAsFixed(0)}',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Text(
+                          'View all',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.keyboard_arrow_up_rounded,
+                          color: AppTheme.primary,
+                          size: 22,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -528,6 +623,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildEmptyOrders(AppLocalizations loc) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -657,16 +753,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildMenuSection(AppLocalizations loc) {
     final items = [
-      _ProfileMenuItem(
-        icon: Icons.location_on_rounded,
-        label: loc.t('saved_addresses'),
-        color: AppTheme.deliveryBlue,
-      ),
-      _ProfileMenuItem(
-        icon: Icons.receipt_long_rounded,
-        label: loc.t('order_history'),
-        color: AppTheme.primary,
-      ),
       _ProfileMenuItem(
         icon: Icons.favorite_rounded,
         label: loc.t('favourites'),
@@ -857,6 +943,7 @@ class _LanguageToggleSwitchState extends State<_LanguageToggleSwitch> {
 
 // ─── Order Card ───────────────────────────────────────────────────────────────
 
+// ignore: unused_element
 class _OrderCard extends StatelessWidget {
   final Map<String, dynamic> order;
   final AppLocalizations loc;
@@ -1032,6 +1119,345 @@ class _OrderCard extends StatelessWidget {
 }
 
 // ─── Order Detail Modal ───────────────────────────────────────────────────────
+
+class _OrderHistoryModal extends StatefulWidget {
+  final List<Map<String, dynamic>> orders;
+  final AppLocalizations loc;
+  final ValueChanged<Map<String, dynamic>> onOrderTap;
+
+  const _OrderHistoryModal({
+    required this.orders,
+    required this.loc,
+    required this.onOrderTap,
+  });
+
+  @override
+  State<_OrderHistoryModal> createState() => _OrderHistoryModalState();
+}
+
+class _OrderHistoryModalState extends State<_OrderHistoryModal> {
+  String _selectedStatus = 'all';
+
+  List<String> get _statuses {
+    final found = widget.orders
+        .map((order) => order['status'] as String? ?? 'placed')
+        .toSet()
+        .toList()
+      ..sort();
+    return ['all', ...found];
+  }
+
+  List<Map<String, dynamic>> get _filteredOrders {
+    if (_selectedStatus == 'all') return widget.orders;
+    return widget.orders
+        .where(
+          (order) => (order['status'] as String? ?? 'placed') == _selectedStatus,
+        )
+        .toList();
+  }
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'placed':
+        return AppTheme.deliveryBlue;
+      case 'confirmed':
+      case 'preparing':
+        return AppTheme.accent;
+      case 'out_for_delivery':
+        return AppTheme.primary;
+      case 'delivered':
+        return AppTheme.success;
+      case 'cancelled':
+        return AppTheme.error;
+      default:
+        return AppTheme.textMuted;
+    }
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'all':
+        return 'All';
+      case 'placed':
+        return widget.loc.t('status_placed');
+      case 'confirmed':
+        return widget.loc.t('status_confirmed');
+      case 'preparing':
+        return widget.loc.t('status_preparing');
+      case 'out_for_delivery':
+        return widget.loc.t('status_out_for_delivery');
+      case 'delivered':
+        return widget.loc.t('status_delivered');
+      case 'cancelled':
+        return widget.loc.t('status_cancelled');
+      default:
+        return status;
+    }
+  }
+
+  String _formatDate(String? dateStr) {
+    if (dateStr == null) return '-';
+    try {
+      final dt = DateTime.parse(dateStr).toLocal();
+      final months = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ];
+      return '${dt.day} ${months[dt.month - 1]}, ${dt.year}';
+    } catch (_) {
+      return '-';
+    }
+  }
+
+  String _shortOrderId(Map<String, dynamic> order) {
+    final orderId = order['id'] as String? ?? '';
+    return orderId.length >= 8
+        ? 'MHF-${orderId.substring(0, 8).toUpperCase()}'
+        : 'MHF-XXXXXXXX';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filteredOrders = _filteredOrders;
+
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.86,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 18,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE0E0E0),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.loc.t('order_history'),
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded),
+                color: AppTheme.textSecondary,
+              ),
+            ],
+          ),
+          Text(
+            '${widget.orders.length} ${widget.loc.t('orders')}',
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 13,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 14),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: _statuses.map((status) {
+                final selected = status == _selectedStatus;
+                final color = status == 'all'
+                    ? AppTheme.primary
+                    : _statusColor(status);
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    selected: selected,
+                    onSelected: (_) => setState(() => _selectedStatus = status),
+                    label: Text(_statusLabel(status)),
+                    labelStyle: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: selected ? Colors.white : color,
+                    ),
+                    selectedColor: color,
+                    backgroundColor: color.withAlpha(18),
+                    side: BorderSide(color: color.withAlpha(70)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Flexible(
+            child: filteredOrders.isEmpty
+                ? _buildEmptyState()
+                : ListView.separated(
+                    shrinkWrap: true,
+                    physics: const BouncingScrollPhysics(),
+                    itemCount: filteredOrders.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final order = filteredOrders[index];
+                      final status = order['status'] as String? ?? 'placed';
+                      final total = (order['total'] as num?)?.toDouble() ?? 0;
+                      final items = order['items'] as List? ?? [];
+                      final names = items
+                          .take(3)
+                          .map((item) => item['name'] ?? '')
+                          .where((name) => '$name'.trim().isNotEmpty)
+                          .join(', ');
+
+                      return GestureDetector(
+                        onTap: () => widget.onOrderTap(order),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: AppTheme.background,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFE8E8E8)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      _shortOrderId(order),
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppTheme.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 9,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _statusColor(status).withAlpha(20),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text(
+                                      _statusLabel(status),
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: _statusColor(status),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                _formatDate(order['created_at'] as String?),
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                names.isEmpty ? widget.loc.t('order_items') : names,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 13,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    '${items.length} ${widget.loc.t('items')}',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 12,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                  ),
+                                  Text(
+                                    '\u20B9${total.toStringAsFixed(0)}',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppTheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.receipt_long_outlined,
+              color: AppTheme.textMuted,
+              size: 36,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              widget.loc.t('no_orders_yet'),
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _OrderDetailModal extends StatelessWidget {
   final Map<String, dynamic> order;
@@ -1375,8 +1801,13 @@ class _EditAddressSheetState extends State<_EditAddressSheet> {
     if (_streetCtrl.text.isEmpty || _cityCtrl.text.isEmpty) return;
     setState(() => _saving = true);
     try {
-      final uid = Supabase.instance.client.auth.currentUser?.id;
-      if (uid != null) {
+      final notifier = context.read<CustomerProfileNotifier>();
+      var userRowId = notifier.customer?['id'] as String?;
+      if (userRowId == null || userRowId.isEmpty) {
+        await notifier.loadFromSupabase();
+        userRowId = notifier.customer?['id'] as String?;
+      }
+      if (userRowId != null && userRowId.isNotEmpty) {
         await Supabase.instance.client
             .from('users')
             .update({
@@ -1386,10 +1817,10 @@ class _EditAddressSheetState extends State<_EditAddressSheet> {
               'city': _cityCtrl.text.trim(),
               'pincode': _pincodeCtrl.text.trim(),
             })
-            .eq('id', uid);
+            .eq('id', userRowId);
       }
       if (!mounted) return;
-      await context.read<CustomerProfileNotifier>().loadFromSupabase();
+      await notifier.loadFromSupabase();
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(

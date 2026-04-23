@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../core/menu_pricing.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/custom_image_widget.dart';
 import '../../services/supabase_service.dart';
@@ -58,7 +57,7 @@ class _CustomerCartScreenState extends State<CustomerCartScreen> {
           (d) => {
             'dish_id': d.id,
             'name': d.name,
-            'price': getPrice(d.isVeg),
+            'price': d.price,
             'qty': d.quantity,
           },
         )
@@ -527,7 +526,7 @@ class _CartItemCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '₹${getPrice(item.isVeg).toInt()} each',
+                    '₹${item.price.toInt()} each',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 12,
                       color: AppTheme.textSecondary,
@@ -538,7 +537,7 @@ class _CartItemCard extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '₹${(getPrice(item.isVeg) * item.quantity).toStringAsFixed(2)}',
+                        '₹${(item.price * item.quantity).toStringAsFixed(2)}',
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 15,
                           fontWeight: FontWeight.w800,

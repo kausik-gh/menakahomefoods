@@ -54,63 +54,24 @@ class _RiderProfileScreenState extends State<RiderProfileScreen> {
     setState(() => _loading = true);
 
     try {
-      final activeFuture = SupabaseService.instance.client
+      final deliveredOrders = List<Map<String, dynamic>>.from(
+        await SupabaseService.instance.client
           .from('orders')
           .select('id')
           .eq('rider_id', widget.riderId)
-          .eq('picked', true)
-          .inFilter('status', ['placed', 'confirmed', 'preparing', 'out_for_delivery']);
-
-      final deliveredFuture = SupabaseService.instance.client
-          .from('orders')
-          .select('total,rating,updated_at,delivered_at')
-          .eq('rider_id', widget.riderId)
           .eq('status', 'delivered')
-          .order('updated_at', ascending: false);
-
-      final results = await Future.wait<dynamic>([activeFuture, deliveredFuture]);
-      final activeOrders = List<Map<String, dynamic>>.from(results[0] as List);
-      final deliveredOrders = List<Map<String, dynamic>>.from(results[1] as List);
-
-      final revenue = deliveredOrders.fold<double>(
-        0,
-        (sum, order) => sum + ((order['total'] as num?)?.toDouble() ?? 0),
       );
-
-      final ratings = deliveredOrders
-          .map((order) => (order['rating'] as num?)?.toDouble())
-          .whereType<double>()
-          .toList();
-
-      final averageRating = ratings.isEmpty
-          ? 0.0
-          : ratings.reduce((a, b) => a + b) / ratings.length;
-
-      final today = DateTime.now();
-      final todayStart = DateTime(today.year, today.month, today.day);
-      final completedToday = deliveredOrders.where((order) {
-        final value = order['delivered_at'] as String? ?? order['updated_at'] as String?;
-        if (value == null) return false;
-        final parsed = DateTime.tryParse(value)?.toLocal();
-        if (parsed == null) return false;
-        return !parsed.isBefore(todayStart);
-      }).length;
-
-      final lastDeliveryTime = deliveredOrders.isEmpty
-          ? null
-          : (deliveredOrders.first['delivered_at'] as String? ??
-              deliveredOrders.first['updated_at'] as String?);
 
       if (mounted) {
         setState(() {
           _analytics = RiderAnalytics(
             completedRides: deliveredOrders.length,
-            revenue: revenue,
-            averageRating: averageRating,
-            ratedDeliveries: ratings.length,
-            activeOrders: activeOrders.length,
-            completedToday: completedToday,
-            lastDeliveryTime: lastDeliveryTime,
+            // revenue: revenue,
+            // averageRating: averageRating,
+            // ratedDeliveries: ratings.length,
+            // activeOrders: activeOrders.length,
+            // completedToday: completedToday,
+            // lastDeliveryTime: lastDeliveryTime,
           );
           _loading = false;
         });
@@ -322,12 +283,12 @@ class _RiderProfileScreenState extends State<RiderProfileScreen> {
           ),
           const SizedBox(height: 14),
           GridView.count(
-            crossAxisCount: 2,
+            crossAxisCount: 1,
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            childAspectRatio: 1.35,
+            childAspectRatio: 2.8,
             children: [
               _buildStatTile(
                 label: 'Rides Completed',
@@ -335,58 +296,58 @@ class _RiderProfileScreenState extends State<RiderProfileScreen> {
                 icon: Icons.check_circle_rounded,
                 color: const Color(0xFF059669),
               ),
-              _buildStatTile(
-                label: 'Revenue',
-                value: 'Rs ${_analytics.revenue.toStringAsFixed(0)}',
-                icon: Icons.currency_rupee_rounded,
-                color: const Color(0xFF2563EB),
-              ),
-              _buildStatTile(
-                label: 'Average Rating',
-                value: _analytics.ratedDeliveries == 0
-                    ? 'No ratings'
-                    : '${_analytics.averageRating.toStringAsFixed(1)} / 5',
-                icon: Icons.star_rounded,
-                color: AppTheme.ratingGold,
-              ),
-              _buildStatTile(
-                label: 'Active Orders',
-                value: '${_analytics.activeOrders}',
-                icon: Icons.delivery_dining_rounded,
-                color: const Color(0xFF7C3AED),
-              ),
+              // _buildStatTile(
+              //   label: 'Revenue',
+              //   value: 'Rs ${_analytics.revenue.toStringAsFixed(0)}',
+              //   icon: Icons.currency_rupee_rounded,
+              //   color: const Color(0xFF2563EB),
+              // ),
+              // _buildStatTile(
+              //   label: 'Average Rating',
+              //   value: _analytics.ratedDeliveries == 0
+              //       ? 'No ratings'
+              //       : '${_analytics.averageRating.toStringAsFixed(1)} / 5',
+              //   icon: Icons.star_rounded,
+              //   color: AppTheme.ratingGold,
+              // ),
+              // _buildStatTile(
+              //   label: 'Active Orders',
+              //   value: '${_analytics.activeOrders}',
+              //   icon: Icons.delivery_dining_rounded,
+              //   color: const Color(0xFF7C3AED),
+              // ),
             ],
           ),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF8FAFC),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _buildMiniMetric(
-                    'Completed Today',
-                    '${_analytics.completedToday}',
-                  ),
-                ),
-                Container(
-                  width: 1,
-                  height: 32,
-                  color: const Color(0xFFE2E8F0),
-                ),
-                Expanded(
-                  child: _buildMiniMetric(
-                    'Last Delivery',
-                    _formatLastDelivery(_analytics.lastDeliveryTime),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // const SizedBox(height: 14),
+          // Container(
+          //   padding: const EdgeInsets.all(14),
+          //   decoration: BoxDecoration(
+          //     color: const Color(0xFFF8FAFC),
+          //     borderRadius: BorderRadius.circular(16),
+          //     border: Border.all(color: const Color(0xFFE2E8F0)),
+          //   ),
+          //   child: Row(
+          //     children: [
+          //       Expanded(
+          //         child: _buildMiniMetric(
+          //           'Completed Today',
+          //           '${_analytics.completedToday}',
+          //         ),
+          //       ),
+          //       Container(
+          //         width: 1,
+          //         height: 32,
+          //         color: const Color(0xFFE2E8F0),
+          //       ),
+          //       Expanded(
+          //         child: _buildMiniMetric(
+          //           'Last Delivery',
+          //           _formatLastDelivery(_analytics.lastDeliveryTime),
+          //         ),
+          //       ),
+          //     ],
+          //   ),
+          // ),
         ],
       ),
     );

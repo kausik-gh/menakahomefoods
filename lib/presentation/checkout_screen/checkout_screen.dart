@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../../core/app_export.dart';
 import '../../core/app_snackbar.dart';
-import '../../core/menu_pricing.dart';
 import '../../providers/customer_profile_notifier.dart';
 import '../../services/supabase_service.dart';
 import '../customer_main/customer_main_screen.dart';
@@ -103,7 +102,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final customerId = profile.customerId;
     if (customer == null || customerId == null || customerId.trim().isEmpty) {
       if (mounted) {
-        showErrorSnackbar(context, 'Customer profile not loaded. Open Profile.');
+        showErrorSnackbar(
+          context,
+          'Customer profile not loaded. Open Profile.',
+        );
       }
       return;
     }
@@ -119,16 +121,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     try {
       final orderId = await SupabaseService.instance.saveOrder(
         customerId: customerId,
-        customerName:
-            '${customer['name'] ?? ''}'.trim().isNotEmpty
-                ? '${customer['name']}'.trim()
-                : '${selectedAddress['name']}',
-        customerPhone:
-            '${customer['phone'] ?? ''}'.trim().isNotEmpty
-                ? '${customer['phone']}'.trim()
-                : '${selectedAddress['phone']}',
-        customerAddress:
-            formattedAddress.isNotEmpty ? formattedAddress : fallbackAddress,
+        customerName: '${customer['name'] ?? ''}'.trim().isNotEmpty
+            ? '${customer['name']}'.trim()
+            : '${selectedAddress['name']}',
+        customerPhone: '${customer['phone'] ?? ''}'.trim().isNotEmpty
+            ? '${customer['phone']}'.trim()
+            : '${selectedAddress['phone']}',
+        customerAddress: formattedAddress.isNotEmpty
+            ? formattedAddress
+            : fallbackAddress,
         items: items,
         orderType: 'one_time',
         meal: meal,
@@ -163,11 +164,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final itemsRaw = (_orderData['items'] as List?) ?? [];
     return itemsRaw.map((entry) {
       final item = Map<String, dynamic>.from(entry as Map);
-      final isVeg = item['isVeg'] as bool? ?? true;
       final quantity =
           ((item['quantity'] as num?) ?? (item['qty'] as num?) ?? 1).toInt();
-      final price =
-          (item['price'] as num?)?.toDouble() ?? getPrice(isVeg).toDouble();
+      final price = (item['price'] as num?)?.toDouble() ?? 0.0;
       return {
         'dish_id': item['dish_id'] ?? item['id'],
         'name': item['name'],
@@ -815,7 +814,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           // Items list
           ...items.map((item) {
             final isVeg = item['isVeg'] as bool? ?? true;
-            final lineTotal = getPrice(isVeg) * ((item['qty'] as num?)?.toDouble() ?? 1);
+            final quantity = ((item['qty'] as num?)?.toDouble() ?? 1);
+            final unitPrice = (item['price'] as num?)?.toDouble() ?? 0.0;
+            final lineTotal = unitPrice * quantity;
             return Padding(
               padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Row(

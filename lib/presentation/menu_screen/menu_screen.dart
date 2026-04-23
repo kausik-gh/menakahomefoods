@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../core/menu_pricing.dart';
+
+import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/custom_image_widget.dart';
 import '../customer_main/customer_main_screen.dart';
@@ -18,20 +19,12 @@ class MenuScreen extends StatefulWidget {
 class _MenuScreenState extends State<MenuScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
-  String _selectedCategory = 'All';
-
-  final List<String> _categories = [
-    'All',
-    'Breakfast',
-    'Lunch',
-    'Dinner',
-    'Snacks',
-  ];
-
-  // All menu dishes with availability toggle
+  final List<String> _categories = ['All', 'Breakfast', 'Lunch', 'Dinner'];
   List<_MenuDish> _dishes = [];
+  bool _loading = true;
+  String _searchQuery = '';
+  String _selectedCategory = 'All';
 
   @override
   void initState() {
@@ -42,7 +35,7 @@ class _MenuScreenState extends State<MenuScreen>
         setState(() => _selectedCategory = _categories[_tabController.index]);
       }
     });
-    _dishes = _buildDishes();
+    _loadMenu();
     CartState.instance.addListener(_onCartChanged);
   }
 
@@ -58,233 +51,34 @@ class _MenuScreenState extends State<MenuScreen>
     if (mounted) setState(() {});
   }
 
-  List<_MenuDish> _buildDishes() {
-    return [
-      _MenuDish(
-        id: 'b1',
-        name: 'Masala Dosa',
-        description:
-            'Crispy dosa with spiced potato filling, sambar & chutneys',
-        price: 89,
-        isVeg: true,
-        category: 'Breakfast',
-        imageUrl:
-            'https://images.pexels.com/photos/5560763/pexels-photo-5560763.jpeg',
-        semanticLabel:
-            'Crispy golden masala dosa with sambar and coconut chutney',
-        meal: 'breakfast',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'b2',
-        name: 'Idli Sambar',
-        description: 'Soft steamed idlis with piping hot sambar and chutneys',
-        price: 69,
-        isVeg: true,
-        category: 'Breakfast',
-        imageUrl:
-            'https://images.pexels.com/photos/4331489/pexels-photo-4331489.jpeg',
-        semanticLabel: 'Soft white idlis with sambar and green chutney',
-        meal: 'breakfast',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'b3',
-        name: 'Poha',
-        description:
-            'Light flattened rice with mustard, curry leaves & peanuts',
-        price: 59,
-        isVeg: true,
-        category: 'Breakfast',
-        imageUrl:
-            'https://images.pexels.com/photos/7625056/pexels-photo-7625056.jpeg',
-        semanticLabel: 'Yellow poha with peanuts and curry leaves in bowl',
-        meal: 'breakfast',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'b4',
-        name: 'Filter Coffee',
-        description: 'Authentic South Indian decoction coffee with frothy milk',
-        price: 39,
-        isVeg: true,
-        category: 'Breakfast',
-        imageUrl:
-            'https://images.pexels.com/photos/312418/pexels-photo-312418.jpeg',
-        semanticLabel:
-            'Traditional South Indian filter coffee in steel tumbler',
-        meal: 'breakfast',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'l1',
-        name: "Amma's Dal Tadka",
-        description: 'Slow-cooked yellow dal with ghee tadka & fresh coriander',
-        price: 129,
-        isVeg: true,
-        category: 'Lunch',
-        imageUrl:
-            'https://images.pexels.com/photos/5560763/pexels-photo-5560763.jpeg',
-        semanticLabel: 'Golden dal tadka with tempering in clay bowl',
-        meal: 'lunch',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'l2',
-        name: 'Veg Thali',
-        description: 'Complete meal: 2 sabzi, dal, rice, roti, salad & dessert',
-        price: 149,
-        isVeg: true,
-        category: 'Lunch',
-        imageUrl:
-            'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
-        semanticLabel: 'Full vegetarian thali with multiple bowls',
-        meal: 'lunch',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'l3',
-        name: 'Paneer Butter Masala',
-        description: 'Creamy tomato-based gravy with soft paneer cubes',
-        price: 169,
-        isVeg: true,
-        category: 'Lunch',
-        imageUrl:
-            'https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg',
-        semanticLabel: 'Creamy orange paneer butter masala in bowl',
-        meal: 'lunch',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'l4',
-        name: 'Chicken Curry',
-        description: 'Home-style chicken curry with aromatic spices & gravy',
-        price: 189,
-        isVeg: false,
-        category: 'Lunch',
-        imageUrl:
-            'https://images.pexels.com/photos/2338407/pexels-photo-2338407.jpeg',
-        semanticLabel: 'Rich brown chicken curry in traditional serving bowl',
-        meal: 'lunch',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'l5',
-        name: 'Mutton Curry',
-        description: 'Slow-cooked mutton in rich onion-tomato masala',
-        price: 229,
-        isVeg: false,
-        category: 'Lunch',
-        imageUrl:
-            'https://images.pexels.com/photos/2338407/pexels-photo-2338407.jpeg',
-        semanticLabel: 'Rich dark mutton curry with whole spices',
-        meal: 'lunch',
-        isAvailable: false,
-      ),
-      _MenuDish(
-        id: 'd1',
-        name: 'Chicken Biryani',
-        description:
-            'Fragrant basmati rice layered with spiced chicken & saffron',
-        price: 199,
-        isVeg: false,
-        category: 'Dinner',
-        imageUrl:
-            'https://images.pexels.com/photos/1624487/pexels-photo-1624487.jpeg',
-        semanticLabel: 'Fragrant chicken biryani in clay pot with saffron rice',
-        meal: 'dinner',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'd2',
-        name: 'Mutton Rogan Josh',
-        description: 'Slow-cooked Kashmiri mutton in aromatic red gravy',
-        price: 249,
-        isVeg: false,
-        category: 'Dinner',
-        imageUrl:
-            'https://images.pexels.com/photos/2338407/pexels-photo-2338407.jpeg',
-        semanticLabel: 'Rich red mutton rogan josh in copper bowl',
-        meal: 'dinner',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'd3',
-        name: 'Dal Makhani',
-        description: 'Creamy black lentils slow-cooked overnight with butter',
-        price: 149,
-        isVeg: true,
-        category: 'Dinner',
-        imageUrl:
-            'https://images.pexels.com/photos/5560763/pexels-photo-5560763.jpeg',
-        semanticLabel: 'Creamy dark dal makhani with butter swirl',
-        meal: 'dinner',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 'd4',
-        name: 'Gulab Jamun',
-        description: 'Soft milk-solid dumplings soaked in rose-flavored syrup',
-        price: 59,
-        isVeg: true,
-        category: 'Dinner',
-        imageUrl:
-            'https://images.pexels.com/photos/1099680/pexels-photo-1099680.jpeg',
-        semanticLabel: 'Soft golden-brown gulab jamun in rose sugar syrup',
-        meal: 'dinner',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 's1',
-        name: 'Samosa (2 pcs)',
-        description: 'Crispy fried pastry filled with spiced potato and peas',
-        price: 49,
-        isVeg: true,
-        category: 'Snacks',
-        imageUrl:
-            'https://images.pexels.com/photos/4331489/pexels-photo-4331489.jpeg',
-        semanticLabel: 'Crispy golden samosas with green chutney on plate',
-        meal: 'snacks',
-        isAvailable: true,
-      ),
-      _MenuDish(
-        id: 's2',
-        name: 'Pakoda Platter',
-        description:
-            'Assorted vegetable fritters with mint and tamarind chutney',
-        price: 79,
-        isVeg: true,
-        category: 'Snacks',
-        imageUrl:
-            'https://images.pexels.com/photos/7625056/pexels-photo-7625056.jpeg',
-        semanticLabel: 'Assorted vegetable pakodas with chutneys on plate',
-        meal: 'snacks',
-        isAvailable: true,
-      ),
-    ];
+  Future<void> _loadMenu() async {
+    setState(() => _loading = true);
+    final rows = await SupabaseService.instance.getMenuItems();
+    final dishes = rows
+        .map(_MenuDish.fromMap)
+        .where(
+          (dish) => const ['breakfast', 'lunch', 'dinner'].contains(dish.meal),
+        )
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      _dishes = dishes;
+      _loading = false;
+    });
   }
 
   List<_MenuDish> get _filteredDishes {
-    return _dishes.where((d) {
+    return _dishes.where((dish) {
       final matchesCategory =
-          _selectedCategory == 'All' || d.category == _selectedCategory;
+          _selectedCategory == 'All' ||
+          dish.meal == _selectedCategory.toLowerCase();
+      final needle = _searchQuery.trim().toLowerCase();
       final matchesSearch =
-          _searchQuery.isEmpty ||
-          d.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          d.description.toLowerCase().contains(_searchQuery.toLowerCase());
+          needle.isEmpty ||
+          dish.name.toLowerCase().contains(needle) ||
+          dish.description.toLowerCase().contains(needle);
       return matchesCategory && matchesSearch;
     }).toList();
-  }
-
-  void _toggleAvailability(String id) {
-    setState(() {
-      final idx = _dishes.indexWhere((d) => d.id == id);
-      if (idx != -1) {
-        _dishes[idx] = _dishes[idx].copyWith(
-          isAvailable: !_dishes[idx].isAvailable,
-        );
-      }
-    });
   }
 
   @override
@@ -301,42 +95,48 @@ class _MenuScreenState extends State<MenuScreen>
             _buildCategoryTabs(),
             const SizedBox(height: 8),
             Expanded(
-              child: _filteredDishes.isEmpty
+              child: _loading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: AppTheme.primary),
+                    )
+                  : _filteredDishes.isEmpty
                   ? _buildEmpty()
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
-                      physics: const BouncingScrollPhysics(),
-                      itemCount: _filteredDishes.length,
-                      itemBuilder: (context, index) {
-                        final dish = _filteredDishes[index];
-                        final qty =
-                            CartState.instance.items[dish.id]?.quantity ?? 0;
-                        return _MenuDishCard(
-                          dish: dish,
-                          quantity: qty,
-                          onAdd: dish.isAvailable
-                              ? () {
-                                  HapticFeedback.lightImpact();
-                                  CartState.instance.addItem(
-                                    CartDish(
-                                      id: dish.id,
-                                      name: dish.name,
-                                      price: dishPrice(dish.isVeg),
-                                      isVeg: dish.isVeg,
-                                      imageUrl: dish.imageUrl,
-                                      semanticLabel: dish.semanticLabel,
-                                      meal: dish.meal,
-                                      quantity: 1,
-                                    ),
-                                  );
-                                }
-                              : null,
-                          onRemove: () =>
-                              CartState.instance.removeItem(dish.id),
-                          onToggleAvailability: () =>
-                              _toggleAvailability(dish.id),
-                        );
-                      },
+                  : RefreshIndicator(
+                      onRefresh: _loadMenu,
+                      color: AppTheme.primary,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+                        physics: const BouncingScrollPhysics(),
+                        itemCount: _filteredDishes.length,
+                        itemBuilder: (context, index) {
+                          final dish = _filteredDishes[index];
+                          final qty =
+                              CartState.instance.items[dish.id]?.quantity ?? 0;
+                          return _MenuDishCard(
+                            dish: dish,
+                            quantity: qty,
+                            onAdd: dish.isAvailable
+                                ? () {
+                                    HapticFeedback.lightImpact();
+                                    CartState.instance.addItem(
+                                      CartDish(
+                                        id: dish.id,
+                                        name: dish.name,
+                                        price: dish.price,
+                                        isVeg: dish.isVeg,
+                                        imageUrl: dish.imageUrl ?? '',
+                                        semanticLabel: dish.semanticLabel,
+                                        meal: dish.meal,
+                                        quantity: 1,
+                                      ),
+                                    );
+                                  }
+                                : null,
+                            onRemove: () =>
+                                CartState.instance.removeItem(dish.id),
+                          );
+                        },
+                      ),
                     ),
             ),
           ],
@@ -440,7 +240,7 @@ class _MenuScreenState extends State<MenuScreen>
         ),
         child: TextField(
           controller: _searchController,
-          onChanged: (v) => setState(() => _searchQuery = v),
+          onChanged: (value) => setState(() => _searchQuery = value),
           style: GoogleFonts.plusJakartaSans(
             fontSize: 14,
             color: AppTheme.textPrimary,
@@ -485,11 +285,11 @@ class _MenuScreenState extends State<MenuScreen>
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: _categories.length,
         itemBuilder: (context, index) {
-          final cat = _categories[index];
-          final isSelected = cat == _selectedCategory;
+          final category = _categories[index];
+          final isSelected = category == _selectedCategory;
           return GestureDetector(
             onTap: () {
-              setState(() => _selectedCategory = cat);
+              setState(() => _selectedCategory = category);
               _tabController.animateTo(index);
             },
             child: AnimatedContainer(
@@ -510,7 +310,7 @@ class _MenuScreenState extends State<MenuScreen>
                       ],
               ),
               child: Text(
-                cat,
+                category,
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
@@ -553,9 +353,15 @@ class _MenuScreenState extends State<MenuScreen>
 }
 
 class _MenuDish {
-  final String id, name, description, category, imageUrl, semanticLabel, meal;
+  final String id;
+  final String name;
+  final String description;
   final double price;
-  final bool isVeg, isAvailable;
+  final bool isVeg;
+  final String meal;
+  final bool isAvailable;
+  final String? imageUrl;
+  final String semanticLabel;
 
   const _MenuDish({
     required this.id,
@@ -563,25 +369,32 @@ class _MenuDish {
     required this.description,
     required this.price,
     required this.isVeg,
-    required this.category,
-    required this.imageUrl,
-    required this.semanticLabel,
     required this.meal,
     required this.isAvailable,
+    required this.imageUrl,
+    required this.semanticLabel,
   });
 
-  _MenuDish copyWith({bool? isAvailable}) => _MenuDish(
-    id: id,
-    name: name,
-    description: description,
-    price: price,
-    isVeg: isVeg,
-    category: category,
-    imageUrl: imageUrl,
-    semanticLabel: semanticLabel,
-    meal: meal,
-    isAvailable: isAvailable ?? this.isAvailable,
-  );
+  factory _MenuDish.fromMap(Map<String, dynamic> map) {
+    final rawImageUrl = (map['image_url'] as String?)?.trim();
+    final meal = ((map['meal_type'] as String?) ?? 'breakfast')
+        .trim()
+        .toLowerCase();
+    final availableToday = map['available_today'] as bool?;
+    final availableForOrder = map['available_for_order'] as bool?;
+
+    return _MenuDish(
+      id: map['id'] as String,
+      name: ((map['name'] as String?) ?? '').trim(),
+      description: ((map['description'] as String?) ?? '').trim(),
+      price: (map['price'] as num?)?.toDouble() ?? 0,
+      isVeg: map['is_veg'] as bool? ?? true,
+      meal: meal,
+      isAvailable: (availableToday ?? true) && (availableForOrder ?? true),
+      imageUrl: rawImageUrl == null || rawImageUrl.isEmpty ? null : rawImageUrl,
+      semanticLabel: ((map['name'] as String?) ?? 'Menu item').trim(),
+    );
+  }
 }
 
 class _MenuDishCard extends StatelessWidget {
@@ -589,14 +402,12 @@ class _MenuDishCard extends StatelessWidget {
   final int quantity;
   final VoidCallback? onAdd;
   final VoidCallback onRemove;
-  final VoidCallback onToggleAvailability;
 
   const _MenuDishCard({
     required this.dish,
     required this.quantity,
     required this.onAdd,
     required this.onRemove,
-    required this.onToggleAvailability,
   });
 
   @override
@@ -622,9 +433,8 @@ class _MenuDishCard extends StatelessWidget {
                   SizedBox(
                     width: 100,
                     height: 110,
-                    child: CustomImageWidget(
+                    child: _DishImage(
                       imageUrl: dish.imageUrl,
-                      fit: BoxFit.cover,
                       semanticLabel: dish.semanticLabel,
                     ),
                   ),
@@ -703,28 +513,25 @@ class _MenuDishCard extends StatelessWidget {
                             ),
                           ),
                         ),
-                        GestureDetector(
-                          onTap: onToggleAvailability,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: dish.isAvailable
+                                ? AppTheme.successLight
+                                : AppTheme.errorLight,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            dish.isAvailable ? 'Available' : 'Sold Out',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
                               color: dish.isAvailable
-                                  ? AppTheme.successLight
-                                  : AppTheme.errorLight,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              dish.isAvailable ? 'Available' : 'Sold Out',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 9,
-                                fontWeight: FontWeight.w700,
-                                color: dish.isAvailable
-                                    ? AppTheme.success
-                                    : AppTheme.error,
-                              ),
+                                  ? AppTheme.success
+                                  : AppTheme.error,
                             ),
                           ),
                         ),
@@ -746,7 +553,7 @@ class _MenuDishCard extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          '₹${dishPrice(dish.isVeg).toStringAsFixed(0)}',
+                          '₹${dish.price.toStringAsFixed(0)}',
                           style: TextStyle(
                             color: dish.isVeg
                                 ? const Color(0xFF4A7C59)
@@ -839,6 +646,27 @@ class _MenuDishCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DishImage extends StatelessWidget {
+  final String? imageUrl;
+  final String semanticLabel;
+
+  const _DishImage({required this.imageUrl, required this.semanticLabel});
+
+  @override
+  Widget build(BuildContext context) {
+    if (imageUrl == null || imageUrl!.isEmpty) {
+      return Container(color: const Color(0xFFE1E5EA));
+    }
+
+    return CustomImageWidget(
+      imageUrl: imageUrl,
+      fit: BoxFit.cover,
+      semanticLabel: semanticLabel,
+      errorWidget: Container(color: const Color(0xFFE1E5EA)),
     );
   }
 }

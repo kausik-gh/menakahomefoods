@@ -1,7 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../../theme/app_theme.dart';
+import 'package:image_picker/image_picker.dart';
+
 import '../../../services/supabase_service.dart';
+import '../../../theme/app_theme.dart';
 import '../../../widgets/custom_image_widget.dart';
 
 class AdminMenuTab extends StatefulWidget {
@@ -12,11 +16,10 @@ class AdminMenuTab extends StatefulWidget {
 }
 
 class _AdminMenuTabState extends State<AdminMenuTab> {
+  final List<String> _categories = ['All', 'Breakfast', 'Lunch', 'Dinner'];
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   String _selectedCategory = 'All';
-
-  final List<String> _categories = ['All', 'Breakfast', 'Lunch', 'Dinner'];
 
   @override
   void initState() {
@@ -26,101 +29,74 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
 
   Future<void> _loadMenu() async {
     setState(() => _loading = true);
-    try {
-      final res = await SupabaseService.instance.client
-          .from('menu_items')
-          .select()
-          .order('category')
-          .order('name');
-      if (mounted) {
-        setState(() {
-          _items = List<Map<String, dynamic>>.from(res);
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
-    }
+    final rows = await SupabaseService.instance.getMenuItems();
+    if (!mounted) return;
+    setState(() {
+      _items = rows;
+      _loading = false;
+    });
   }
 
   List<Map<String, dynamic>> get _filteredItems {
     if (_selectedCategory == 'All') return _items;
-    return _items.where((i) => i['category'] == _selectedCategory).toList();
+    final meal = _selectedCategory.toLowerCase();
+    return _items
+        .where(
+          (item) =>
+              ((item['meal_type'] as String?) ?? '').toLowerCase() == meal,
+        )
+        .toList();
   }
 
-  Future<void> _toggleAvailability(
-    String itemId,
-    String field,
-    bool current,
-  ) async {
+  Future<void> _toggleAvailability(String itemId, bool currentValue) async {
     try {
       await SupabaseService.instance.client
           .from('menu_items')
-          .update({field: !current})
+          .update({'available_today': !currentValue})
           .eq('id', itemId);
       await _loadMenu();
-    } catch (e) {
-      // silent
+    } catch (_) {
+      if (!mounted) return;
+      _showMessage('Could not update availability', AppTheme.error);
     }
   }
 
-  void _showEditSheet({Map<String, dynamic>? item}) {
-    showModalBottomSheet(
+  Future<void> _showEditModal({Map<String, dynamic>? item}) async {
+    final saved = await showDialog<bool>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _EditDishSheet(
-        item: item,
-        onSave: (data) async {
-          Navigator.pop(context);
-          await _saveDish(data, item?['id'] as String?);
-        },
+      barrierDismissible: true,
+      builder: (_) => _EditDishDialog(item: item),
+    );
+
+    if (saved == true) {
+      await _loadMenu();
+      if (!mounted) return;
+      _showMessage('Menu item saved', AppTheme.success);
+    }
+  }
+
+  void _showMessage(String message, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          style: GoogleFonts.plusJakartaSans(
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
       ),
     );
-  }
-
-  Future<void> _saveDish(Map<String, dynamic> data, String? existingId) async {
-    try {
-      if (existingId != null) {
-        await SupabaseService.instance.client
-            .from('menu_items')
-            .update(data)
-            .eq('id', existingId);
-      } else {
-        await SupabaseService.instance.client.from('menu_items').insert(data);
-      }
-      await _loadMenu();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              existingId != null
-                  ? '✅ Dish updated successfully'
-                  : '✅ New dish added',
-              style: GoogleFonts.plusJakartaSans(
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
-            ),
-            backgroundColor: AppTheme.success,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
-          ),
-        );
-      }
-    } catch (e) {
-      // silent
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Category filter + Add button
         Container(
           color: Colors.white,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
@@ -130,10 +106,11 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
-                    children: _categories.map((cat) {
-                      final isSelected = _selectedCategory == cat;
+                    children: _categories.map((category) {
+                      final isSelected = _selectedCategory == category;
                       return GestureDetector(
-                        onTap: () => setState(() => _selectedCategory = cat),
+                        onTap: () =>
+                            setState(() => _selectedCategory = category),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
                           margin: const EdgeInsets.only(right: 8),
@@ -148,7 +125,7 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            cat,
+                            category,
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
@@ -165,7 +142,7 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
               ),
               const SizedBox(width: 8),
               GestureDetector(
-                onTap: () => _showEditSheet(),
+                onTap: () => _showEditModal(),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
@@ -233,8 +210,8 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
                           padding: const EdgeInsets.all(16),
                           physics: const BouncingScrollPhysics(),
                           itemCount: _filteredItems.length,
-                          itemBuilder: (context, i) =>
-                              _buildDishCard(_filteredItems[i]),
+                          itemBuilder: (context, index) =>
+                              _buildDishCard(_filteredItems[index]),
                         ),
                 ),
         ),
@@ -244,10 +221,11 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
 
   Widget _buildDishCard(Map<String, dynamic> item) {
     final itemId = item['id'] as String;
-    final availOrder = item['available_for_order'] as bool? ?? true;
-    final availSub = item['available_for_subscription'] as bool? ?? true;
     final isVeg = item['is_veg'] as bool? ?? true;
     final price = (item['price'] as num?)?.toDouble() ?? 0.0;
+    final availableToday = item['available_today'] as bool? ?? true;
+    final mealType = ((item['meal_type'] as String?) ?? 'breakfast')
+        .toLowerCase();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -256,117 +234,117 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: AppTheme.cardShadow,
       ),
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: SizedBox(
-                    width: 64,
-                    height: 64,
-                    child: CustomImageWidget(
-                      imageUrl: item['image_url'] as String? ?? '',
-                      fit: BoxFit.cover,
-                    ),
-                  ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                width: 64,
+                height: 64,
+                child: _MenuItemImage(
+                  imageUrl: (item['image_url'] as String?)?.trim(),
+                  semanticLabel: item['name'] as String? ?? 'Menu item',
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.rectangle,
-                              border: Border.all(
-                                color: isVeg
-                                    ? AppTheme.vegGreen
-                                    : AppTheme.nonVegRed,
-                                width: 1.5,
-                              ),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                            child: Center(
-                              child: Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  color: isVeg
-                                      ? AppTheme.vegGreen
-                                      : AppTheme.nonVegRed,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                            ),
+                      Container(
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: isVeg
+                                ? AppTheme.vegGreen
+                                : AppTheme.nonVegRed,
+                            width: 1.5,
                           ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              item['name'] as String? ?? '',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.textPrimary,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        item['description'] as String? ?? '',
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 11,
-                          color: AppTheme.textSecondary,
+                          borderRadius: BorderRadius.circular(2),
                         ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Text(
-                            '₹${price.toInt()}',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w800,
-                              color: AppTheme.primary,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
+                        child: Center(
+                          child: Container(
+                            width: 6,
+                            height: 6,
                             decoration: BoxDecoration(
-                              color: AppTheme.surfaceVariant,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              item['category'] as String? ?? '',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.textSecondary,
-                              ),
+                              color: isVeg
+                                  ? AppTheme.vegGreen
+                                  : AppTheme.nonVegRed,
+                              shape: BoxShape.circle,
                             ),
                           ),
-                        ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          item['name'] as String? ?? '',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ),
-                ),
+                  const SizedBox(height: 2),
+                  Text(
+                    item['description'] as String? ?? '',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Text(
+                        '₹${price.toStringAsFixed(0)}',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppTheme.surfaceVariant,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _mealLabel(mealType),
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Column(
+              children: [
                 GestureDetector(
-                  onTap: () => _showEditSheet(item: item),
+                  onTap: () => _showEditModal(item: item),
                   child: Container(
                     width: 32,
                     height: 32,
@@ -381,108 +359,65 @@ class _AdminMenuTabState extends State<AdminMenuTab> {
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
-          Container(height: 1, color: AppTheme.surfaceVariant),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _AvailabilityToggle(
-                    label: 'Order Now',
-                    value: availOrder,
-                    onChanged: (v) => _toggleAvailability(
-                      itemId,
-                      'available_for_order',
-                      availOrder,
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => _toggleAvailability(itemId, availableToday),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
                     ),
-                  ),
-                ),
-                Container(width: 1, height: 24, color: AppTheme.surfaceVariant),
-                Expanded(
-                  child: _AvailabilityToggle(
-                    label: 'Subscription',
-                    value: availSub,
-                    onChanged: (v) => _toggleAvailability(
-                      itemId,
-                      'available_for_subscription',
-                      availSub,
+                    decoration: BoxDecoration(
+                      color: availableToday
+                          ? AppTheme.successLight
+                          : AppTheme.errorLight,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      availableToday ? 'Live' : 'Hidden',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: availableToday
+                            ? AppTheme.success
+                            : AppTheme.error,
+                      ),
                     ),
                   ),
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-class _AvailabilityToggle extends StatelessWidget {
-  final String label;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _AvailabilityToggle({
-    required this.label,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.plusJakartaSans(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.textSecondary,
-          ),
-        ),
-        const SizedBox(width: 6),
-        Transform.scale(
-          scale: 0.75,
-          child: Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: AppTheme.primary,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _EditDishSheet extends StatefulWidget {
+class _EditDishDialog extends StatefulWidget {
   final Map<String, dynamic>? item;
-  final Future<void> Function(Map<String, dynamic>) onSave;
 
-  const _EditDishSheet({this.item, required this.onSave});
+  const _EditDishDialog({this.item});
 
   @override
-  State<_EditDishSheet> createState() => _EditDishSheetState();
+  State<_EditDishDialog> createState() => _EditDishDialogState();
 }
 
-class _EditDishSheetState extends State<_EditDishSheet> {
-  final TextEditingController _nameCtrl = TextEditingController();
-  final TextEditingController _descCtrl = TextEditingController();
-  final TextEditingController _priceCtrl = TextEditingController();
-  final TextEditingController _imageCtrl = TextEditingController();
-  String _category = 'Breakfast';
+class _EditDishDialogState extends State<_EditDishDialog> {
+  final _nameCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  final _picker = ImagePicker();
+
+  Uint8List? _selectedImageBytes;
+  String? _selectedImageName;
+  String? _selectedContentType;
+  String? _imageUrl;
   String _mealType = 'breakfast';
   bool _isVeg = true;
-  bool _availOrder = true;
-  bool _availSub = true;
+  bool _availableToday = true;
   bool _saving = false;
-
-  final List<String> _categories = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
+  bool _imageExpanded = false;
 
   @override
   void initState() {
@@ -491,14 +426,12 @@ class _EditDishSheetState extends State<_EditDishSheet> {
     _nameCtrl.text = item?['name'] as String? ?? '';
     _descCtrl.text = item?['description'] as String? ?? '';
     _priceCtrl.text = item != null
-        ? (item['price'] as num?)?.toInt().toString() ?? ''
+        ? (item['price'] as num?)?.toString() ?? ''
         : '';
-    _imageCtrl.text = item?['image_url'] as String? ?? '';
-    _category = item?['category'] as String? ?? 'Breakfast';
-    _mealType = item?['meal_type'] as String? ?? 'breakfast';
+    _mealType = ((item?['meal_type'] as String?) ?? 'breakfast').toLowerCase();
     _isVeg = item?['is_veg'] as bool? ?? true;
-    _availOrder = item?['available_for_order'] as bool? ?? true;
-    _availSub = item?['available_for_subscription'] as bool? ?? true;
+    _availableToday = item?['available_today'] as bool? ?? true;
+    _imageUrl = (item?['image_url'] as String?)?.trim();
   }
 
   @override
@@ -506,259 +439,577 @@ class _EditDishSheetState extends State<_EditDishSheet> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _priceCtrl.dispose();
-    _imageCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickImage() async {
+    final image = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+      maxWidth: 1600,
+    );
+    if (image == null) return;
+
+    final bytes = await image.readAsBytes();
+    if (!mounted) return;
+
+    setState(() {
+      _selectedImageBytes = bytes;
+      _selectedImageName = image.name;
+      _selectedContentType = image.mimeType;
+      _imageExpanded = false;
+    });
+  }
+
+  Future<void> _save() async {
+    final name = _nameCtrl.text.trim();
+    final price = double.tryParse(_priceCtrl.text.trim());
+
+    if (name.isEmpty || price == null) {
+      _showInlineMessage('Enter a valid name and price', AppTheme.error);
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    try {
+      final baseData = <String, dynamic>{
+        'name': name,
+        'description': _descCtrl.text.trim(),
+        'price': price,
+        'meal_type': _mealType,
+        'category': _mealLabel(_mealType),
+        'is_veg': _isVeg,
+        'available_today': _availableToday,
+      };
+
+      String itemId;
+      final existingId = widget.item?['id'] as String?;
+
+      if (existingId == null) {
+        final inserted = await SupabaseService.instance.client
+            .from('menu_items')
+            .insert({
+              ...baseData,
+              'image_url': null,
+              'available_for_order': true,
+              'available_for_subscription': true,
+            })
+            .select('id')
+            .single();
+        itemId = inserted['id'] as String;
+      } else {
+        itemId = existingId;
+      }
+
+      String? uploadedImageUrl = _imageUrl;
+      if (_selectedImageBytes != null && _selectedImageName != null) {
+        uploadedImageUrl = await SupabaseService.instance.uploadMenuItemImage(
+          itemId: itemId,
+          bytes: _selectedImageBytes!,
+          originalFileName: _selectedImageName!,
+          contentType: _selectedContentType,
+        );
+      }
+
+      final payload = {
+        ...baseData,
+        'image_url': uploadedImageUrl == null || uploadedImageUrl.trim().isEmpty
+            ? null
+            : uploadedImageUrl.trim(),
+      };
+
+      await SupabaseService.instance.client
+          .from('menu_items')
+          .update(payload)
+          .eq('id', itemId);
+
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (_) {
+      _showInlineMessage('Could not save this menu item', AppTheme.error);
+      setState(() => _saving = false);
+    }
+  }
+
+  void _showInlineMessage(String message, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+        ),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _collapseImage() {
+    if (_imageExpanded) {
+      setState(() => _imageExpanded = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppTheme.textMuted.withAlpha(80),
-                borderRadius: BorderRadius.circular(2),
-              ),
+    final dialogWidth = MediaQuery.of(context).size.width < 720
+        ? MediaQuery.of(context).size.width - 32
+        : 540.0;
+
+    return GestureDetector(
+      onTap: _collapseImage,
+      child: Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: GestureDetector(
+          onTap: () {
+            FocusScope.of(context).unfocus();
+            _collapseImage();
+          },
+          child: Container(
+            width: dialogWidth,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.86,
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-              child: Row(
-                children: [
-                  Text(
-                    widget.item != null ? 'Edit Dish' : 'Add New Dish',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textPrimary,
-                    ),
-                  ),
-                ],
-              ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: AppTheme.cardShadow,
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: _nameCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Dish Name',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      textCapitalization: TextCapitalization.words,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _descCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Description',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      maxLines: 2,
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _priceCtrl,
-                            decoration: InputDecoration(
-                              labelText: 'Price (₹)',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            keyboardType: TextInputType.number,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.item == null ? 'Add Dish' : 'Edit Dish',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary,
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            initialValue: _category,
-                            decoration: InputDecoration(
-                              labelText: 'Category',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
+                      ),
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).pop(false),
+                        child: Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: AppTheme.surfaceVariant,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.close_rounded,
+                            size: 18,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLabel('Name'),
+                        const SizedBox(height: 8),
+                        _buildTextField(
+                          controller: _nameCtrl,
+                          hintText: 'Menu item name',
+                          textCapitalization: TextCapitalization.words,
+                        ),
+                        const SizedBox(height: 14),
+                        _buildLabel('Description'),
+                        const SizedBox(height: 8),
+                        _buildTextField(
+                          controller: _descCtrl,
+                          hintText: 'Short description',
+                          maxLines: 3,
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildLabel('Price'),
+                                  const SizedBox(height: 8),
+                                  _buildTextField(
+                                    controller: _priceCtrl,
+                                    hintText: '0.00',
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                          decimal: true,
+                                        ),
+                                  ),
+                                ],
                               ),
                             ),
-                            items: _categories
-                                .map(
-                                  (c) => DropdownMenuItem(
-                                    value: c,
-                                    child: Text(c),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildLabel('Meal type'),
+                                  const SizedBox(height: 8),
+                                  _buildDropdown(),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _ToggleCard(
+                                label: 'Vegetarian',
+                                value: _isVeg,
+                                activeColor: AppTheme.vegGreen,
+                                onChanged: (value) => setState(() {
+                                  _isVeg = value;
+                                  _imageExpanded = false;
+                                }),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _ToggleCard(
+                                label: 'Available',
+                                value: _availableToday,
+                                activeColor: AppTheme.primary,
+                                onChanged: (value) => setState(() {
+                                  _availableToday = value;
+                                  _imageExpanded = false;
+                                }),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                        _buildLabel('Image'),
+                        const SizedBox(height: 10),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildImagePreview(),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  GestureDetector(
+                                    onTap: _pickImage,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                        vertical: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primaryContainer,
+                                        borderRadius: BorderRadius.circular(14),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.upload_rounded,
+                                            size: 16,
+                                            color: AppTheme.primary,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Upload image',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppTheme.primary,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _selectedImageName ??
+                                        ((_imageUrl == null ||
+                                                _imageUrl!.trim().isEmpty)
+                                            ? 'No image selected'
+                                            : 'Current image'),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 12,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _saving
+                              ? null
+                              : () => Navigator.of(context).pop(false),
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(48),
+                            side: BorderSide(color: AppTheme.surfaceVariant),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          child: Text(
+                            'Cancel',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: _saving ? null : _save,
+                          style: ElevatedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(48),
+                            backgroundColor: AppTheme.primary,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          child: _saving
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
                                   ),
                                 )
-                                .toList(),
-                            onChanged: (v) {
-                              if (v != null) {
-                                setState(() {
-                                  _category = v;
-                                  _mealType = v.toLowerCase();
-                                });
-                              }
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _imageCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Image URL',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                              : Text(
+                                  'Save',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        _buildToggleRow(
-                          'Vegetarian',
-                          _isVeg,
-                          AppTheme.vegGreen,
-                          (v) => setState(() => _isVeg = v),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildToggleRow(
-                            'Order Now',
-                            _availOrder,
-                            AppTheme.primary,
-                            (v) => setState(() => _availOrder = v),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildToggleRow(
-                            'Subscription',
-                            _availSub,
-                            AppTheme.primary,
-                            (v) => setState(() => _availSub = v),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(
-                20,
-                8,
-                20,
-                MediaQuery.of(context).padding.bottom + 16,
-              ),
-              child: SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: _saving
-                      ? null
-                      : () async {
-                          final name = _nameCtrl.text.trim();
-                          final price =
-                              double.tryParse(_priceCtrl.text.trim()) ?? 0;
-                          if (name.isEmpty) return;
-                          setState(() => _saving = true);
-                          await widget.onSave({
-                            'name': name,
-                            'description': _descCtrl.text.trim(),
-                            'price': price,
-                            'category': _category,
-                            'meal_type': _mealType,
-                            'image_url': _imageCtrl.text.trim(),
-                            'is_veg': _isVeg,
-                            'available_for_order': _availOrder,
-                            'available_for_subscription': _availSub,
-                          });
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primary,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    elevation: 0,
+                    ],
                   ),
-                  child: _saving
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : Text(
-                          widget.item != null ? 'Save Changes' : 'Add Dish',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildToggleRow(
-    String label,
-    bool value,
-    Color color,
-    ValueChanged<bool> onChanged,
-  ) {
-    return Row(
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.plusJakartaSans(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.textSecondary,
-          ),
-        ),
-        const Spacer(),
-        Transform.scale(
-          scale: 0.85,
-          child: Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: color,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-        ),
-      ],
+  Widget _buildLabel(String text) {
+    return Text(
+      text,
+      style: GoogleFonts.plusJakartaSans(
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+        color: AppTheme.textPrimary,
+      ),
     );
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String hintText,
+    TextInputType? keyboardType,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+    int maxLines = 1,
+  }) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      maxLines: maxLines,
+      textCapitalization: textCapitalization,
+      decoration: InputDecoration(
+        hintText: hintText,
+        hintStyle: GoogleFonts.plusJakartaSans(color: AppTheme.textMuted),
+        filled: true,
+        fillColor: AppTheme.surfaceVariant.withAlpha(80),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+      ),
+      onTap: _collapseImage,
+    );
+  }
+
+  Widget _buildDropdown() {
+    return DropdownButtonFormField<String>(
+      initialValue: _mealType,
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: AppTheme.surfaceVariant.withAlpha(80),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+      ),
+      items: const ['breakfast', 'lunch', 'dinner']
+          .map(
+            (meal) => DropdownMenuItem<String>(
+              value: meal,
+              child: Text(
+                _mealLabel(meal),
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+      onChanged: (value) {
+        if (value == null) return;
+        setState(() {
+          _mealType = value;
+          _imageExpanded = false;
+        });
+      },
+    );
+  }
+
+  Widget _buildImagePreview() {
+    final hasImage =
+        _selectedImageBytes != null || (_imageUrl?.isNotEmpty ?? false);
+    final size = _imageExpanded ? 220.0 : 84.0;
+
+    return GestureDetector(
+      onTap: hasImage
+          ? () => setState(() => _imageExpanded = !_imageExpanded)
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: const Color(0xFFE1E5EA),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: _selectedImageBytes != null
+            ? Image.memory(_selectedImageBytes!, fit: BoxFit.cover)
+            : (_imageUrl == null || _imageUrl!.isEmpty)
+            ? const SizedBox.shrink()
+            : CustomImageWidget(
+                imageUrl: _imageUrl,
+                fit: BoxFit.cover,
+                errorWidget: Container(color: const Color(0xFFE1E5EA)),
+              ),
+      ),
+    );
+  }
+}
+
+class _ToggleCard extends StatelessWidget {
+  final String label;
+  final bool value;
+  final Color activeColor;
+  final ValueChanged<bool> onChanged;
+
+  const _ToggleCard({
+    required this.label,
+    required this.value,
+    required this.activeColor,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceVariant.withAlpha(80),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ),
+          Transform.scale(
+            scale: 0.85,
+            child: Switch(
+              value: value,
+              onChanged: onChanged,
+              activeThumbColor: activeColor,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MenuItemImage extends StatelessWidget {
+  final String? imageUrl;
+  final String semanticLabel;
+
+  const _MenuItemImage({required this.imageUrl, required this.semanticLabel});
+
+  @override
+  Widget build(BuildContext context) {
+    if (imageUrl == null || imageUrl!.isEmpty) {
+      return Container(color: const Color(0xFFE1E5EA));
+    }
+
+    return CustomImageWidget(
+      imageUrl: imageUrl,
+      fit: BoxFit.cover,
+      semanticLabel: semanticLabel,
+      errorWidget: Container(color: const Color(0xFFE1E5EA)),
+    );
+  }
+}
+
+String _mealLabel(String mealType) {
+  switch (mealType) {
+    case 'breakfast':
+      return 'Breakfast';
+    case 'lunch':
+      return 'Lunch';
+    case 'dinner':
+      return 'Dinner';
+    default:
+      return 'Breakfast';
   }
 }

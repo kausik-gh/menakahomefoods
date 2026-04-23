@@ -14,57 +14,20 @@ class SubDish {
   final String name;
   final double price;
   final String meal;
+  final bool isVeg;
 
   const SubDish({
     required this.id,
     required this.name,
     required this.price,
     required this.meal,
+    this.isVeg = true,
   });
 }
 
-const List<SubDish> _breakfastDishes = [
-  SubDish(id: 'b1', name: 'Masala Dosa', price: 89, meal: 'breakfast'),
-  SubDish(id: 'b2', name: 'Idli Sambar', price: 69, meal: 'breakfast'),
-  SubDish(id: 'b3', name: 'Poha', price: 59, meal: 'breakfast'),
-  SubDish(id: 'b4', name: 'Upma', price: 55, meal: 'breakfast'),
-  SubDish(id: 'b5', name: 'Puri Bhaji', price: 79, meal: 'breakfast'),
-];
+const List<String> _mealOrder = ['breakfast', 'lunch', 'dinner'];
 
-const List<SubDish> _lunchDishes = [
-  SubDish(id: 'l1', name: "Amma's Dal Tadka", price: 129, meal: 'lunch'),
-  SubDish(id: 'l2', name: 'Veg Thali', price: 149, meal: 'lunch'),
-  SubDish(id: 'l3', name: 'Paneer Butter Masala', price: 169, meal: 'lunch'),
-  SubDish(id: 'l4', name: 'Chicken Curry', price: 189, meal: 'lunch'),
-  SubDish(id: 'l5', name: 'Rajma Chawal', price: 119, meal: 'lunch'),
-];
-
-const List<SubDish> _dinnerDishes = [
-  SubDish(id: 'd1', name: 'Chicken Biryani', price: 199, meal: 'dinner'),
-  SubDish(id: 'd2', name: 'Mutton Rogan Josh', price: 249, meal: 'dinner'),
-  SubDish(id: 'd3', name: 'Dal Makhani', price: 149, meal: 'dinner'),
-  SubDish(id: 'd4', name: 'Veg Biryani', price: 159, meal: 'dinner'),
-  SubDish(id: 'd5', name: 'Butter Naan + Paneer', price: 179, meal: 'dinner'),
-];
-
-List<SubDish> dishesForMeal(String meal) {
-  switch (meal) {
-    case 'breakfast':
-      return _breakfastDishes;
-    case 'lunch':
-      return _lunchDishes;
-    case 'dinner':
-      return _dinnerDishes;
-    default:
-      return [];
-  }
-}
-
-const Map<String, double> _mealPrices = {
-  'breakfast': 75,
-  'lunch': 149,
-  'dinner': 179,
-};
+List<SubDish> dishesForMeal(String meal) => const <SubDish>[];
 
 const List<String> _weekDays = [
   'Mon',
@@ -109,6 +72,8 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   int _step = 0;
   bool _isLoading = false;
   bool _showSuccess = false;
+  bool _loadingMenu = true;
+  String? _menuError;
 
   // Step 1 — Date Range
   DateTime _startDate = DateTime.now().add(const Duration(days: 1));
@@ -119,6 +84,9 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
 
   // Step 3 — Weekly Plan: { meal: { dayKey: dishId } }
   final Map<String, Map<String, String>> _weeklyPlan = {};
+  final Map<String, List<SubDish>> _subscriptionDishesByMeal = {
+    for (final meal in _mealOrder) meal: <SubDish>[],
+  };
 
   late AnimationController _stepAnimController;
   late Animation<double> _stepFadeAnim;
@@ -148,18 +116,109 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
     );
 
     _initWeeklyPlan();
+    unawaited(_loadSubscriptionMenu());
   }
 
   void _initWeeklyPlan() {
-    for (final meal in ['breakfast', 'lunch', 'dinner']) {
+    for (final meal in _mealOrder) {
       _weeklyPlan[meal] = {};
-      final dishes = dishesForMeal(meal);
-      if (dishes.isNotEmpty) {
-        for (final day in _weekDayKeys) {
-          _weeklyPlan[meal]![day] = dishes.first.id;
+    }
+  }
+
+  Future<void> _loadSubscriptionMenu() async {
+    setState(() {
+      _loadingMenu = true;
+      _menuError = null;
+    });
+    try {
+      final rows = await SupabaseService.instance.getMenuItems();
+      final grouped = <String, List<SubDish>>{
+        for (final meal in _mealOrder) meal: <SubDish>[],
+      };
+
+      for (final row in rows) {
+        final meal = ((row['meal_type'] as String?) ?? '').trim().toLowerCase();
+        if (!_mealOrder.contains(meal)) continue;
+        if ((row['available_for_subscription'] as bool?) == false) continue;
+        grouped[meal]!.add(
+          SubDish(
+            id: row['id'] as String,
+            name: ((row['name'] as String?) ?? '').trim(),
+            price: (row['price'] as num?)?.toDouble() ?? 0,
+            meal: meal,
+            isVeg: row['is_veg'] as bool? ?? true,
+          ),
+        );
+      }
+
+      for (final meal in _mealOrder) {
+        grouped[meal]!.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
+      }
+
+      final availableMeals = _mealOrder
+          .where((meal) => grouped[meal]!.isNotEmpty)
+          .toList();
+      final nextSelectedMeals = _selectedMeals
+          .where(availableMeals.contains)
+          .toSet();
+
+      if (nextSelectedMeals.isEmpty && availableMeals.isNotEmpty) {
+        nextSelectedMeals.add(
+          availableMeals.contains('lunch') ? 'lunch' : availableMeals.first,
+        );
+      }
+
+      if (!mounted) return;
+      setState(() {
+        for (final meal in _mealOrder) {
+          _subscriptionDishesByMeal[meal] = grouped[meal]!;
+        }
+        _selectedMeals
+          ..clear()
+          ..addAll(nextSelectedMeals);
+        _ensureWeeklyPlanDefaults();
+        _loadingMenu = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _menuError = 'Could not load subscription menu.';
+        _loadingMenu = false;
+      });
+    }
+  }
+
+  void _ensureWeeklyPlanDefaults() {
+    for (final meal in _mealOrder) {
+      final dishes = _dishesForMeal(meal);
+      final plan = _weeklyPlan.putIfAbsent(meal, () => {});
+      if (dishes.isEmpty) {
+        plan.clear();
+        continue;
+      }
+      final validIds = dishes.map((dish) => dish.id).toSet();
+      for (final day in _weekDayKeys) {
+        final currentId = plan[day];
+        if (currentId == null || !validIds.contains(currentId)) {
+          plan[day] = dishes.first.id;
         }
       }
     }
+  }
+
+  List<SubDish> _dishesForMeal(String meal) =>
+      _subscriptionDishesByMeal[meal] ?? const <SubDish>[];
+
+  SubDish? _selectedDishForDay(String meal, String dayKey) {
+    final dishes = _dishesForMeal(meal);
+    if (dishes.isEmpty) return null;
+    final selectedDishId = _weeklyPlan[meal]?[dayKey];
+    for (final dish in dishes) {
+      if (dish.id == selectedDishId) return dish;
+    }
+    return dishes.first;
   }
 
   @override
@@ -171,8 +230,15 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
 
   int get _totalDays => _endDate.difference(_startDate).inDays + 1;
 
+  double get _weeklyPlanAmount => _selectedMeals.fold(0.0, (sum, meal) {
+    final mealTotal = _weekDayKeys.fold(0.0, (daySum, dayKey) {
+      return daySum + (_selectedDishForDay(meal, dayKey)?.price ?? 0);
+    });
+    return sum + mealTotal;
+  });
+
   double get _pricePerDay =>
-      _selectedMeals.fold(0, (sum, meal) => sum + (_mealPrices[meal] ?? 0));
+      _weekDayKeys.isEmpty ? 0 : _weeklyPlanAmount / _weekDayKeys.length;
 
   double get _totalAmount => _pricePerDay * _totalDays;
 
@@ -196,11 +262,17 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
       case 0:
         return _endDate.isAfter(_startDate);
       case 1:
-        return _selectedMeals.isNotEmpty;
+        return !_loadingMenu && _menuError == null && _selectedMeals.isNotEmpty;
       case 2:
-        return true;
+        return !_loadingMenu &&
+            _menuError == null &&
+            _selectedMeals.isNotEmpty &&
+            _selectedMeals.every((meal) => _dishesForMeal(meal).isNotEmpty);
       case 3:
-        return true;
+        return !_loadingMenu &&
+            _menuError == null &&
+            _selectedMeals.isNotEmpty &&
+            _selectedMeals.every((meal) => _dishesForMeal(meal).isNotEmpty);
       default:
         return false;
     }
@@ -209,6 +281,11 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   Future<void> _subscribe() async {
     setState(() => _isLoading = true);
     HapticFeedback.mediumImpact();
+
+    if (_loadingMenu || _menuError != null || _selectedMeals.isEmpty) {
+      setState(() => _isLoading = false);
+      return;
+    }
 
     final profile = context.read<CustomerProfileNotifier>();
     if (profile.customer == null) {
@@ -716,6 +793,20 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   // ─── Step 2: Meal Selection ───────────────────────────────────────────────
 
   Widget _buildStep2() {
+    if (_loadingMenu) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppTheme.primary),
+      );
+    }
+
+    if (_menuError != null) {
+      return _buildMenuLoadState(
+        message: _menuError!,
+        actionLabel: 'Retry',
+        onTap: _loadSubscriptionMenu,
+      );
+    }
+
     final meals = [
       {
         'key': 'breakfast',
@@ -752,14 +843,16 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
           const SizedBox(height: 16),
           ...meals.map((m) {
             final key = m['key']!;
+            final hasDishes = _dishesForMeal(key).isNotEmpty;
             final isSelected = _selectedMeals.contains(key);
             return _MealChipCard(
               emoji: m['emoji']!,
               label: m['label']!,
-              time: m['time']!,
+              time: hasDishes ? m['time']! : 'No subscription dishes available',
               isSelected: isSelected,
-              price: _mealPrices[key] ?? 0,
+              isEnabled: hasDishes,
               onTap: () {
+                if (!hasDishes) return;
                 HapticFeedback.selectionClick();
                 setState(() {
                   if (isSelected && _selectedMeals.length > 1) {
@@ -767,64 +860,11 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
                   } else if (!isSelected) {
                     _selectedMeals.add(key);
                   }
+                  _ensureWeeklyPlanDefaults();
                 });
               },
             );
           }),
-          const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.primaryContainer,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.primary.withAlpha(60)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Price Preview',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                    Text(
-                      '₹${_pricePerDay.toStringAsFixed(0)} per day',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.primary,
-                      ),
-                    ),
-                  ],
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      'Total',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                    Text(
-                      '₹${_totalAmount.toStringAsFixed(0)}',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );
@@ -833,6 +873,20 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   // ─── Step 3: Weekly Dish Planner ──────────────────────────────────────────
 
   Widget _buildStep3() {
+    if (_loadingMenu) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppTheme.primary),
+      );
+    }
+
+    if (_menuError != null) {
+      return _buildMenuLoadState(
+        message: _menuError!,
+        actionLabel: 'Retry',
+        onTap: _loadSubscriptionMenu,
+      );
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
       child: Column(
@@ -846,6 +900,12 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
             ),
           ),
           const SizedBox(height: 16),
+          if (_selectedMeals.isEmpty)
+            _buildMenuLoadState(
+              message: 'No subscription meals are currently available.',
+              actionLabel: 'Refresh',
+              onTap: _loadSubscriptionMenu,
+            ),
           ..._selectedMeals.map((meal) => _buildMealPlanner(meal)),
         ],
       ),
@@ -853,7 +913,10 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   }
 
   Widget _buildMealPlanner(String meal) {
-    final dishes = dishesForMeal(meal);
+    final dishes = _dishesForMeal(meal);
+    if (dishes.isEmpty) {
+      return const SizedBox.shrink();
+    }
     final mealEmoji = meal == 'breakfast'
         ? '🌅'
         : meal == 'lunch'
@@ -885,62 +948,6 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
                     color: AppTheme.textPrimary,
                   ),
                 ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: () {
-                    final mondayDish =
-                        _weeklyPlan[meal]?['mon'] ?? dishes.first.id;
-                    setState(() {
-                      for (final day in _weekDayKeys) {
-                        _weeklyPlan[meal]![day] = mondayDish;
-                      }
-                    });
-                    HapticFeedback.selectionClick();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Monday\'s $mealLabel copied to all days',
-                          style: GoogleFonts.plusJakartaSans(fontSize: 13),
-                        ),
-                        backgroundColor: AppTheme.secondary,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.copy_rounded,
-                          size: 12,
-                          color: AppTheme.primary,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Repeat Mon',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.primary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
               ],
             ),
           ),
@@ -948,12 +955,8 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
           ...List.generate(_weekDayKeys.length, (i) {
             final dayKey = _weekDayKeys[i];
             final dayLabel = _weekDays[i];
-            final selectedDishId =
-                _weeklyPlan[meal]?[dayKey] ?? dishes.first.id;
-            final selectedDish = dishes.firstWhere(
-              (d) => d.id == selectedDishId,
-              orElse: () => dishes.first,
-            );
+            final selectedDish =
+                _selectedDishForDay(meal, dayKey) ?? dishes.first;
 
             return Container(
               margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
@@ -1037,91 +1040,93 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: AppTheme.textMuted.withAlpha(80),
-              borderRadius: BorderRadius.circular(2),
-            ),
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(sheetContext).size.height * 0.72,
           ),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Text(
-              'Choose a dish',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.textPrimary,
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          ...dishes.map((dish) {
-            final isSelected = (_weeklyPlan[meal]?[dayKey] ?? '') == dish.id;
-            return ListTile(
-              onTap: () {
-                setState(() {
-                  _weeklyPlan[meal]![dayKey] = dish.id;
-                });
-                Navigator.pop(context);
-              },
-              leading: Container(
-                width: 36,
-                height: 36,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
                 decoration: BoxDecoration(
-                  color: isSelected
-                      ? AppTheme.primaryContainer
-                      : AppTheme.background,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  Icons.restaurant_rounded,
-                  color: isSelected ? AppTheme.primary : AppTheme.textMuted,
-                  size: 18,
+                  color: AppTheme.textMuted.withAlpha(80),
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              title: Text(
-                dish.name,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
-                ),
-              ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '₹${dish.price.toStringAsFixed(0)}',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.primary,
-                    ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                  'Choose a dish',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.textPrimary,
                   ),
-                  if (isSelected) ...[
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.check_circle_rounded,
-                      color: AppTheme.primary,
-                      size: 18,
-                    ),
-                  ],
-                ],
+                ),
               ),
-            );
-          }),
-          const SizedBox(height: 16),
-        ],
+              const SizedBox(height: 8),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: dishes.length,
+                  itemBuilder: (context, index) {
+                    final dish = dishes[index];
+                    final isSelected =
+                        (_weeklyPlan[meal]?[dayKey] ?? '') == dish.id;
+                    return ListTile(
+                      onTap: () {
+                        setState(() {
+                          _weeklyPlan[meal]![dayKey] = dish.id;
+                        });
+                        Navigator.pop(context);
+                      },
+                      leading: _VegIndicator(isVeg: dish.isVeg),
+                      title: Text(
+                        dish.name,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '₹${dish.price.toStringAsFixed(0)}',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.primary,
+                            ),
+                          ),
+                          if (isSelected) ...[
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.check_circle_rounded,
+                              color: AppTheme.primary,
+                              size: 18,
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1129,6 +1134,20 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
   // ─── Step 4: Review + Confirm ─────────────────────────────────────────────
 
   Widget _buildStep4() {
+    if (_loadingMenu) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppTheme.primary),
+      );
+    }
+
+    if (_menuError != null) {
+      return _buildMenuLoadState(
+        message: _menuError!,
+        actionLabel: 'Retry',
+        onTap: _loadSubscriptionMenu,
+      );
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
       child: Column(
@@ -1187,7 +1206,10 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
                 ),
                 const SizedBox(height: 12),
                 ..._selectedMeals.map((meal) {
-                  final dishes = dishesForMeal(meal);
+                  final dishes = _dishesForMeal(meal);
+                  if (dishes.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
                   final mealLabel = meal[0].toUpperCase() + meal.substring(1);
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -1207,11 +1229,9 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
                           spacing: 6,
                           runSpacing: 4,
                           children: _weekDayKeys.map((dayKey) {
-                            final dishId = _weeklyPlan[meal]?[dayKey] ?? '';
-                            final dish = dishes.firstWhere(
-                              (d) => d.id == dishId,
-                              orElse: () => dishes.first,
-                            );
+                            final dish =
+                                _selectedDishForDay(meal, dayKey) ??
+                                dishes.first;
                             return Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 8,
@@ -1266,6 +1286,60 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMenuLoadState({
+    required String message,
+    required String actionLabel,
+    required VoidCallback onTap,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.restaurant_menu_rounded,
+              size: 42,
+              color: AppTheme.textMuted,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: onTap,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  actionLabel,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.primary,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1475,12 +1549,34 @@ class _SubscriptionWizardSheetState extends State<_SubscriptionWizardSheet>
 
 // ─── Meal Chip Card ───────────────────────────────────────────────────────────
 
+class _VegIndicator extends StatelessWidget {
+  final bool isVeg;
+
+  const _VegIndicator({required this.isVeg});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isVeg ? AppTheme.vegGreen : AppTheme.nonVegRed;
+    return SizedBox(
+      width: 36,
+      height: 36,
+      child: Center(
+        child: Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+      ),
+    );
+  }
+}
+
 class _MealChipCard extends StatefulWidget {
   final String emoji;
   final String label;
   final String time;
   final bool isSelected;
-  final double price;
+  final bool isEnabled;
   final VoidCallback onTap;
 
   const _MealChipCard({
@@ -1488,7 +1584,7 @@ class _MealChipCard extends StatefulWidget {
     required this.label,
     required this.time,
     required this.isSelected,
-    required this.price,
+    required this.isEnabled,
     required this.onTap,
   });
 
@@ -1523,10 +1619,12 @@ class _MealChipCardState extends State<_MealChipCard>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: (_) => _controller.reverse(),
+      onTapDown: widget.isEnabled ? (_) => _controller.reverse() : null,
       onTapUp: (_) {
         _controller.forward();
-        widget.onTap();
+        if (widget.isEnabled) {
+          widget.onTap();
+        }
       },
       onTapCancel: () => _controller.forward(),
       child: ScaleTransition(
@@ -1537,15 +1635,25 @@ class _MealChipCardState extends State<_MealChipCard>
           margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            gradient: widget.isSelected ? AppTheme.primaryGradient : null,
-            color: widget.isSelected ? null : Colors.white,
+            gradient:
+                widget.isSelected && widget.isEnabled
+                    ? AppTheme.primaryGradient
+                    : null,
+            color:
+                widget.isSelected && widget.isEnabled
+                    ? null
+                    : widget.isEnabled
+                    ? Colors.white
+                    : AppTheme.surfaceVariant,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: widget.isSelected
+              color: widget.isSelected && widget.isEnabled
                   ? Colors.transparent
-                  : AppTheme.primary.withAlpha(40),
+                  : widget.isEnabled
+                  ? AppTheme.primary.withAlpha(40)
+                  : AppTheme.textMuted.withAlpha(40),
             ),
-            boxShadow: widget.isSelected
+            boxShadow: widget.isSelected && widget.isEnabled
                 ? AppTheme.buttonShadow
                 : AppTheme.cardShadow,
           ),
@@ -1562,46 +1670,26 @@ class _MealChipCardState extends State<_MealChipCard>
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 15,
                         fontWeight: FontWeight.w800,
-                        color: widget.isSelected
+                        color: widget.isSelected && widget.isEnabled
                             ? Colors.white
-                            : AppTheme.textPrimary,
+                            : widget.isEnabled
+                            ? AppTheme.textPrimary
+                            : AppTheme.textMuted,
                       ),
                     ),
                     Text(
                       widget.time,
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 12,
-                        color: widget.isSelected
+                        color: widget.isSelected && widget.isEnabled
                             ? Colors.white.withAlpha(200)
-                            : AppTheme.textSecondary,
+                            : widget.isEnabled
+                            ? AppTheme.textSecondary
+                            : AppTheme.textMuted,
                       ),
                     ),
                   ],
                 ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '₹${widget.price.toStringAsFixed(0)}',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: widget.isSelected
-                          ? Colors.white
-                          : AppTheme.primary,
-                    ),
-                  ),
-                  Text(
-                    'per day',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 10,
-                      color: widget.isSelected
-                          ? Colors.white.withAlpha(180)
-                          : AppTheme.textSecondary,
-                    ),
-                  ),
-                ],
               ),
               const SizedBox(width: 8),
               AnimatedContainer(
@@ -1609,16 +1697,20 @@ class _MealChipCardState extends State<_MealChipCard>
                 width: 22,
                 height: 22,
                 decoration: BoxDecoration(
-                  color: widget.isSelected ? Colors.white : Colors.transparent,
+                  color: widget.isSelected && widget.isEnabled
+                      ? Colors.white
+                      : Colors.transparent,
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: widget.isSelected
+                    color: widget.isSelected && widget.isEnabled
                         ? Colors.white
-                        : AppTheme.textMuted,
+                        : widget.isEnabled
+                        ? AppTheme.textMuted
+                        : AppTheme.textMuted.withAlpha(120),
                     width: 2,
                   ),
                 ),
-                child: widget.isSelected
+                child: widget.isSelected && widget.isEnabled
                     ? Icon(
                         Icons.check_rounded,
                         size: 14,

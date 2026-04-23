@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../theme/app_theme.dart';
-import '../../core/menu_pricing.dart';
 import '../../widgets/global_bottom_bar.dart';
 
 /// Cart state shared across tabs
@@ -61,10 +60,8 @@ class CartState {
   }
 
   int get totalCount => items.values.fold(0, (s, d) => s + d.quantity);
-  double get subtotal => items.values.fold(
-        0.0,
-        (s, d) => s + getPrice(d.isVeg) * d.quantity,
-      );
+  double get subtotal =>
+      items.values.fold(0.0, (s, d) => s + d.price * d.quantity);
 }
 
 class CartDish {

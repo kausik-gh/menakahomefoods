@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../../core/menu_pricing.dart';
 import '../../../theme/app_theme.dart';
 import '../../../widgets/custom_image_widget.dart';
 import '../cart_screen.dart';
@@ -22,7 +21,7 @@ class CartItemWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final unitPrice = getPrice(item.isVeg);
+    final unitPrice = item.price;
     return Dismissible(
       key: Key(item.id),
       direction: DismissDirection.endToStart,

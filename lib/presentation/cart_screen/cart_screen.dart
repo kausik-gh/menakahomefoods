@@ -1,7 +1,6 @@
 import 'package:go_router/go_router.dart';
 
 import '../../core/app_export.dart';
-import '../../core/menu_pricing.dart';
 import '../customer_main/customer_main_screen.dart';
 import './widgets/cart_checkout_button_widget.dart';
 import './widgets/cart_empty_widget.dart';
@@ -87,11 +86,8 @@ class _CartScreenState extends State<CartScreen> {
     }).toList();
   }
 
-  // Totals from isVeg only (never stale cart price field).
-  double get _subtotal => _cartItems.fold(
-        0.0,
-        (sum, item) => sum + getPrice(item.isVeg) * item.quantity,
-      );
+  double get _subtotal =>
+      _cartItems.fold(0.0, (sum, item) => sum + item.price * item.quantity);
 
   double get _deliveryFee => _subtotal >= 300 ? 0 : 29.0;
 
@@ -147,7 +143,7 @@ class _CartScreenState extends State<CartScreen> {
                 (item) => {
                   'name': item.name,
                   'qty': item.quantity,
-                  'price': getPrice(item.isVeg),
+                  'price': item.price,
                   'isVeg': item.isVeg,
                 },
               )
@@ -175,9 +171,7 @@ class _CartScreenState extends State<CartScreen> {
       body: SafeArea(
         bottom: false,
         child: isEmpty
-            ? CartEmptyWidget(
-                onBrowse: () => context.go('/home'),
-              )
+            ? CartEmptyWidget(onBrowse: () => context.go('/home'))
             : isTablet
             ? _buildTabletLayout()
             : _buildPhoneLayout(),

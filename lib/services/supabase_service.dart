@@ -1,6 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SupabaseService {
+  static const String menuItemImageBucket = 'menu-item-images';
   static SupabaseService? _instance;
   static SupabaseService get instance => _instance ??= SupabaseService._();
 
@@ -9,6 +12,48 @@ class SupabaseService {
   /// Supabase is initialized in [main] via [Supabase.initialize].
   SupabaseClient get client => Supabase.instance.client;
   String? lastSubscriptionError;
+
+  Future<List<Map<String, dynamic>>> getMenuItems() async {
+    try {
+      final response = await client
+          .from('menu_items')
+          .select()
+          .order('meal_type')
+          .order('name');
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  Future<String> uploadMenuItemImage({
+    required String itemId,
+    required Uint8List bytes,
+    required String originalFileName,
+    String? contentType,
+  }) async {
+    final trimmedName = originalFileName.trim();
+    final extension = trimmedName.contains('.')
+        ? trimmedName.split('.').last.toLowerCase()
+        : 'jpg';
+    final safeExtension = extension.isEmpty ? 'jpg' : extension;
+    final filePath =
+        '$itemId/${DateTime.now().millisecondsSinceEpoch}.$safeExtension';
+
+    await client.storage
+        .from(menuItemImageBucket)
+        .uploadBinary(
+          filePath,
+          bytes,
+          fileOptions: FileOptions(
+            cacheControl: '3600',
+            upsert: false,
+            contentType: contentType,
+          ),
+        );
+
+    return client.storage.from(menuItemImageBucket).getPublicUrl(filePath);
+  }
 
   // Save order to Supabase
   Future<String?> saveOrder({
@@ -38,9 +83,8 @@ class SupabaseService {
               'quantity':
                   ((item['quantity'] as num?) ?? (item['qty'] as num?) ?? 1)
                       .toInt(),
-              'qty':
-                  ((item['qty'] as num?) ?? (item['quantity'] as num?) ?? 1)
-                      .toInt(),
+              'qty': ((item['qty'] as num?) ?? (item['quantity'] as num?) ?? 1)
+                  .toInt(),
             },
           )
           .toList();
@@ -134,7 +178,10 @@ class SupabaseService {
             'customer_phone': customerPhone.trim(),
             'start_date': startDate.toIso8601String().split('T').first,
             'end_date': endDate.toIso8601String().split('T').first,
-            'meals': meals.map((meal) => meal.trim()).where((meal) => meal.isNotEmpty).toList(),
+            'meals': meals
+                .map((meal) => meal.trim())
+                .where((meal) => meal.isNotEmpty)
+                .toList(),
             'weekly_plan': weeklyPlan,
             'status': 'active',
             'total_amount': totalAmount,
@@ -145,7 +192,8 @@ class SupabaseService {
           .single();
       return response['id'] as String?;
     } catch (e) {
-      lastSubscriptionError = 'Supabase insert failed for `public.subscriptions`: $e';
+      lastSubscriptionError =
+          'Supabase insert failed for `public.subscriptions`: $e';
       return null;
     }
   }

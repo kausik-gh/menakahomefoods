@@ -1,11 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import '../../core/menu_pricing.dart';
 import '../../providers/customer_profile_notifier.dart';
+import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/custom_image_widget.dart';
 import '../../core/app_localizations.dart';
@@ -38,6 +39,22 @@ class HomeDish {
     this.isChefSpecial = false,
     this.tag = '',
   });
+
+  factory HomeDish.fromMenuItem(Map<String, dynamic> map) {
+    final name = ((map['name'] as String?) ?? '').trim();
+    final meal = ((map['meal_type'] as String?) ?? '').trim().toLowerCase();
+    final imageUrl = ((map['image_url'] as String?) ?? '').trim();
+    return HomeDish(
+      id: map['id'] as String,
+      name: name,
+      description: ((map['description'] as String?) ?? '').trim(),
+      price: (map['price'] as num?)?.toDouble() ?? 0,
+      isVeg: map['is_veg'] as bool? ?? true,
+      imageUrl: imageUrl,
+      semanticLabel: name.isEmpty ? 'Menu item' : name,
+      meal: meal,
+    );
+  }
 }
 
 const List<HomeDish> _allDishes = [
@@ -219,6 +236,9 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
   String _selectedMeal = 'breakfast';
   late TabController _mealTabController;
   final ScrollController _scrollController = ScrollController();
+  List<HomeDish> _menuDishes = [];
+  List<HomeDish> _chefSpecialDishes = [];
+  bool _loadingMenu = true;
   double _scrollOffset = 0;
 
   @override
@@ -241,8 +261,34 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
         });
       }
     });
+    unawaited(_loadMenuItems());
     CartState.instance.addListener(_onCartChanged);
     _scrollController.addListener(_onScroll);
+  }
+
+  Future<void> _loadMenuItems() async {
+    setState(() => _loadingMenu = true);
+    final rows = await SupabaseService.instance.getMenuItems();
+    final dishes = rows
+        .where((row) {
+          final meal = ((row['meal_type'] as String?) ?? '')
+              .trim()
+              .toLowerCase();
+          final availableForOrder = row['available_for_order'] as bool? ?? true;
+          final availableToday = row['available_today'] as bool? ?? true;
+          return const ['breakfast', 'lunch', 'dinner'].contains(meal) &&
+              availableForOrder &&
+              availableToday;
+        })
+        .map(HomeDish.fromMenuItem)
+        .toList();
+    final specials = List<HomeDish>.from(dishes)..shuffle(Random());
+    if (!mounted) return;
+    setState(() {
+      _menuDishes = dishes;
+      _chefSpecialDishes = specials.take(5).toList();
+      _loadingMenu = false;
+    });
   }
 
   void _onScroll() {
@@ -277,10 +323,9 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
   }
 
   List<HomeDish> get _mealDishes =>
-      _allDishes.where((d) => d.meal == _selectedMeal).toList();
+      _menuDishes.where((d) => d.meal == _selectedMeal).toList();
 
-  List<HomeDish> get _chefSpecials =>
-      _allDishes.where((d) => d.isChefSpecial).toList();
+  List<HomeDish> get _chefSpecials => _chefSpecialDishes;
 
   @override
   Widget build(BuildContext context) {
@@ -321,33 +366,39 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
               sliver: SliverList(
                 delegate: SliverChildBuilderDelegate(
-                  (context, index) => _DishListCard(
-                    dish: _mealDishes[index],
-                    onAdd: () {
-                      CartState.instance.addItem(
-                        CartDish(
-                          id: _mealDishes[index].id,
-                          name: _mealDishes[index].name,
-                          price: dishPrice(_mealDishes[index].isVeg),
-                          isVeg: _mealDishes[index].isVeg,
-                          imageUrl: _mealDishes[index].imageUrl,
-                          semanticLabel: _mealDishes[index].semanticLabel,
-                          meal: _mealDishes[index].meal,
-                          quantity: 1,
-                        ),
-                      );
-                      _showAddedToast(_mealDishes[index].name, loc);
-                    },
-                    onRemove: () =>
-                        CartState.instance.removeItem(_mealDishes[index].id),
-                    quantity:
-                        CartState
-                            .instance
-                            .items[_mealDishes[index].id]
-                            ?.quantity ??
-                        0,
-                  ),
-                  childCount: _mealDishes.length,
+                  (context, index) {
+                    if (_loadingMenu) {
+                      return const _MenuStateCard(isLoading: true);
+                    }
+                    if (_mealDishes.isEmpty) {
+                      return const _MenuStateCard(isLoading: false);
+                    }
+                    final dish = _mealDishes[index];
+                    return _DishListCard(
+                      dish: dish,
+                      onAdd: () {
+                        CartState.instance.addItem(
+                          CartDish(
+                            id: dish.id,
+                            name: dish.name,
+                            price: dish.price,
+                            isVeg: dish.isVeg,
+                            imageUrl: dish.imageUrl,
+                            semanticLabel: dish.semanticLabel,
+                            meal: dish.meal,
+                            quantity: 1,
+                          ),
+                        );
+                        _showAddedToast(dish.name, loc);
+                      },
+                      onRemove: () => CartState.instance.removeItem(dish.id),
+                      quantity:
+                          CartState.instance.items[dish.id]?.quantity ?? 0,
+                    );
+                  },
+                  childCount: _loadingMenu || _mealDishes.isEmpty
+                      ? 1
+                      : _mealDishes.length,
                 ),
               ),
             ),
@@ -607,6 +658,18 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
   }
 
   Widget _buildChefSpecials() {
+    if (_loadingMenu) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16),
+        child: _MenuStateCard(isLoading: true),
+      );
+    }
+    if (_chefSpecials.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16),
+        child: _MenuStateCard(isLoading: false),
+      );
+    }
     return SizedBox(
       height: 200,
       child: ListView.builder(
@@ -624,7 +687,7 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
                 CartDish(
                   id: dish.id,
                   name: dish.name,
-                  price: dishPrice(dish.isVeg),
+                  price: dish.price,
                   isVeg: dish.isVeg,
                   imageUrl: dish.imageUrl,
                   semanticLabel: dish.semanticLabel,
@@ -826,6 +889,37 @@ class _CustomerHomeScreenState extends State<CustomerHomeScreen>
 }
 
 // ─── Offer Banner Carousel ────────────────────────────────────────────────────
+
+class _MenuStateCard extends StatelessWidget {
+  final bool isLoading;
+
+  const _MenuStateCard({required this.isLoading});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: AppTheme.cardShadow,
+      ),
+      child: Center(
+        child: isLoading
+            ? const CircularProgressIndicator(color: AppTheme.primary)
+            : Text(
+                'No menu items available',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+      ),
+    );
+  }
+}
 
 class _OfferBannerCarousel extends StatefulWidget {
   const _OfferBannerCarousel();
@@ -1171,7 +1265,7 @@ class _ChefSpecialCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      '₹${dishPrice(dish.isVeg).toStringAsFixed(0)}',
+                      '₹${dish.price.toStringAsFixed(0)}',
                       style: TextStyle(
                         color: dish.isVeg
                             ? const Color(0xFF4A7C59)
@@ -1360,7 +1454,7 @@ class _DishListCard extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '₹${dishPrice(dish.isVeg).toStringAsFixed(0)}',
+                        '₹${dish.price.toStringAsFixed(0)}',
                         style: TextStyle(
                           color: dish.isVeg
                               ? const Color(0xFF4A7C59)
