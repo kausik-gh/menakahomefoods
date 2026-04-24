@@ -82,7 +82,10 @@ CREATE TRIGGER orders_sync_rider_counts
   FOR EACH ROW
   EXECUTE FUNCTION public.sync_rider_order_counts();
 
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+DROP INDEX IF EXISTS idx_orders_subscription_schedule_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_subscription_customer_meal_date_unique
+  ON public.orders(customer_id, order_date, meal)
+  WHERE order_type = 'subscription';
 
 CREATE OR REPLACE FUNCTION public.generate_subscription_orders_for_next_day(
   p_reference_time TIMESTAMPTZ DEFAULT now()
@@ -97,6 +100,10 @@ DECLARE
   v_day_key TEXT := public.subscription_day_key((timezone('Asia/Kolkata', p_reference_time))::date + 1);
   v_inserted_count INTEGER := 0;
 BEGIN
+  IF NOT public.current_user_is_admin() THEN
+    RAISE EXCEPTION 'Only admins can generate tomorrow orders.';
+  END IF;
+
   INSERT INTO public.orders (
     customer_id,
     customer_name,
@@ -150,16 +157,23 @@ BEGIN
   WHERE s.status = 'active'
     AND v_target_date BETWEEN s.start_date AND s.end_date
     AND meal_plan.meal IN ('breakfast', 'lunch', 'dinner', 'snacks', 'beverages')
-  ON CONFLICT (source_subscription_id, order_date, meal)
-  DO NOTHING;
+  ON CONFLICT DO NOTHING;
 
   GET DIAGNOSTICS v_inserted_count = ROW_COUNT;
   RETURN v_inserted_count;
 END;
 $$;
 
-SELECT cron.schedule(
-  'subscription-order-generation-hourly',
-  '5 * * * *',
-  $$SELECT public.generate_subscription_orders_for_next_day();$$
-);
+CREATE OR REPLACE FUNCTION public.generate_subscription_orders_for_next_day()
+RETURNS INTEGER
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT public.generate_subscription_orders_for_next_day(now());
+$$;
+
+REVOKE ALL ON FUNCTION public.generate_subscription_orders_for_next_day() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.generate_subscription_orders_for_next_day() TO authenticated;
+REVOKE ALL ON FUNCTION public.generate_subscription_orders_for_next_day(TIMESTAMPTZ) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.generate_subscription_orders_for_next_day(TIMESTAMPTZ) TO authenticated;

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -265,4 +266,254 @@ class SupabaseService {
       return false;
     }
   }
+
+  Future<SubscriptionOrderGenerationResult> generateTomorrowSubscriptionOrders({
+    DateTime? referenceTime,
+  }) async {
+    final now = (referenceTime ?? DateTime.now()).toLocal();
+    final targetDate = DateTime(now.year, now.month, now.day).add(
+      const Duration(days: 1),
+    );
+    final targetDateKey = _dateKey(targetDate);
+    final targetDayKey = _dayKey(targetDate);
+
+    final subscriptionsResponse = await client
+        .from('subscriptions')
+        .select()
+        .eq('status', 'active')
+        .lte('start_date', targetDateKey)
+        .gte('end_date', targetDateKey);
+
+    final subscriptions = List<Map<String, dynamic>>.from(subscriptionsResponse);
+    final plannedRows = <_PlannedSubscriptionOrder>[];
+    final menuItemIds = <String>{};
+
+    for (final subscription in subscriptions) {
+      final meals = _stringListFromDynamic(subscription['meals']);
+      final weeklyPlan = _mapFromDynamic(subscription['weekly_plan']);
+      final dayPlan = _mapFromDynamic(weeklyPlan[targetDayKey]);
+      final customerId = '${subscription['customer_id'] ?? ''}'.trim();
+
+      if (customerId.isEmpty) continue;
+
+      for (final meal in meals) {
+        if (!_allowedSubscriptionMeals.contains(meal)) continue;
+        final rawMenuItemId = '${dayPlan[meal] ?? ''}'.trim();
+        if (rawMenuItemId.isEmpty) continue;
+
+        plannedRows.add(
+          _PlannedSubscriptionOrder(
+            customerId: customerId,
+            customerName: '${subscription['customer_name'] ?? ''}'.trim(),
+            customerPhone: '${subscription['customer_phone'] ?? ''}'.trim(),
+            meal: meal,
+            menuItemId: rawMenuItemId,
+          ),
+        );
+        menuItemIds.add(rawMenuItemId);
+      }
+    }
+
+    if (plannedRows.isEmpty || menuItemIds.isEmpty) {
+      return SubscriptionOrderGenerationResult(
+        insertedCount: 0,
+        skippedExistingCount: 0,
+        skippedMissingMenuItemCount: 0,
+        consideredSubscriptionCount: subscriptions.length,
+        targetDate: targetDate,
+      );
+    }
+
+    final menuItemsResponse = await client
+        .from('menu_items')
+        .select('id, name, price')
+        .inFilter('id', menuItemIds.toList());
+    final menuItems = List<Map<String, dynamic>>.from(menuItemsResponse);
+    final menuItemById = <String, Map<String, dynamic>>{
+      for (final item in menuItems) '${item['id'] ?? ''}': item,
+    };
+
+    final existingOrdersResponse = await client
+        .from('orders')
+        .select('customer_id, meal')
+        .eq('order_type', 'subscription')
+        .eq('order_date', targetDateKey);
+    final existingOrders = List<Map<String, dynamic>>.from(existingOrdersResponse);
+    final existingKeys = <String>{
+      for (final order in existingOrders)
+        _subscriptionOrderKey(
+          customerId: '${order['customer_id'] ?? ''}',
+          meal: '${order['meal'] ?? ''}',
+          orderDate: targetDateKey,
+        ),
+    };
+
+    final inserts = <Map<String, dynamic>>[];
+    var skippedExistingCount = 0;
+    var skippedMissingMenuItemCount = 0;
+
+    for (final row in plannedRows) {
+      final dedupeKey = _subscriptionOrderKey(
+        customerId: row.customerId,
+        meal: row.meal,
+        orderDate: targetDateKey,
+      );
+
+      if (existingKeys.contains(dedupeKey)) {
+        skippedExistingCount += 1;
+        continue;
+      }
+
+      final menuItem = menuItemById[row.menuItemId];
+      if (menuItem == null) {
+        skippedMissingMenuItemCount += 1;
+        continue;
+      }
+
+      final price = (menuItem['price'] as num?)?.toDouble() ?? 0;
+
+      inserts.add(<String, dynamic>{
+        'customer_id': row.customerId,
+        'customer_name': row.customerName,
+        'customer_phone': row.customerPhone,
+        'customer_address': '',
+        'items': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'dish_id': row.menuItemId,
+            'name': '${menuItem['name'] ?? ''}'.trim(),
+            'price': price,
+            'quantity': 1,
+            'qty': 1,
+          },
+        ],
+        'order_type': 'subscription',
+        'meal': row.meal,
+        'status': 'placed',
+        'picked': false,
+        'subtotal': price,
+        'delivery_fee': 0,
+        'gst': 0,
+        'total': price,
+        'order_date': targetDateKey,
+      });
+
+      existingKeys.add(dedupeKey);
+    }
+
+    if (inserts.isNotEmpty) {
+      await client.from('orders').insert(inserts);
+    }
+
+    return SubscriptionOrderGenerationResult(
+      insertedCount: inserts.length,
+      skippedExistingCount: skippedExistingCount,
+      skippedMissingMenuItemCount: skippedMissingMenuItemCount,
+      consideredSubscriptionCount: subscriptions.length,
+      targetDate: targetDate,
+    );
+  }
+
+  static const Set<String> _allowedSubscriptionMeals = <String>{
+    'breakfast',
+    'lunch',
+    'dinner',
+    'snacks',
+    'beverages',
+  };
+
+  List<String> _stringListFromDynamic(dynamic value) {
+    if (value is List) {
+      return value.map((item) => '$item'.trim()).where((item) => item.isNotEmpty).toList();
+    }
+
+    if (value is String && value.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        if (decoded is List) {
+          return decoded
+              .map((item) => '$item'.trim())
+              .where((item) => item.isNotEmpty)
+              .toList();
+        }
+      } catch (_) {}
+    }
+
+    return <String>[];
+  }
+
+  Map<String, dynamic> _mapFromDynamic(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+
+    if (value is Map) {
+      return value.map(
+        (key, entry) => MapEntry('$key', entry),
+      );
+    }
+
+    if (value is String && value.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        if (decoded is Map) {
+          return decoded.map(
+            (key, entry) => MapEntry('$key', entry),
+          );
+        }
+      } catch (_) {}
+    }
+
+    return <String, dynamic>{};
+  }
+
+  String _subscriptionOrderKey({
+    required String customerId,
+    required String meal,
+    required String orderDate,
+  }) {
+    return '${customerId.trim()}|${meal.trim()}|$orderDate';
+  }
+
+  String _dateKey(DateTime date) {
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '${date.year}-$month-$day';
+  }
+
+  String _dayKey(DateTime date) {
+    const days = <String>['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    return days[date.weekday - 1];
+  }
+}
+
+class SubscriptionOrderGenerationResult {
+  final int insertedCount;
+  final int skippedExistingCount;
+  final int skippedMissingMenuItemCount;
+  final int consideredSubscriptionCount;
+  final DateTime targetDate;
+
+  const SubscriptionOrderGenerationResult({
+    required this.insertedCount,
+    required this.skippedExistingCount,
+    required this.skippedMissingMenuItemCount,
+    required this.consideredSubscriptionCount,
+    required this.targetDate,
+  });
+}
+
+class _PlannedSubscriptionOrder {
+  final String customerId;
+  final String customerName;
+  final String customerPhone;
+  final String meal;
+  final String menuItemId;
+
+  const _PlannedSubscriptionOrder({
+    required this.customerId,
+    required this.customerName,
+    required this.customerPhone,
+    required this.meal,
+    required this.menuItemId,
+  });
 }

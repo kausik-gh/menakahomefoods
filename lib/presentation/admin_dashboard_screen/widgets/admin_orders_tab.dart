@@ -24,6 +24,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
   List<Map<String, dynamic>> _tomorrowOrders = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _riders = <Map<String, dynamic>>[];
   bool _loading = true;
+  bool _runningTomorrowGeneration = false;
 
   static const List<String> _statusOptions = <String>[
     'placed',
@@ -204,6 +205,116 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
         ),
       );
     } catch (_) {}
+  }
+
+  Future<void> _runTomorrowOrderGeneration() async {
+    if (_runningTomorrowGeneration) return;
+
+    setState(() => _runningTomorrowGeneration = true);
+
+    try {
+      final result =
+          await SupabaseService.instance.generateTomorrowSubscriptionOrders(
+        referenceTime: DateTime.now(),
+      );
+
+      if (!mounted) return;
+      await _loadData();
+      if (!mounted) return;
+
+      final targetDate = result.targetDate;
+      final insertedCount = result.insertedCount;
+      final existingCount = result.skippedExistingCount;
+      final missingMenuItemCount = result.skippedMissingMenuItemCount;
+      final targetDateLabel = _formatPrettyDate(targetDate);
+      final messageParts = <String>[
+        '$insertedCount tomorrow order${insertedCount == 1 ? '' : 's'} created for $targetDateLabel.',
+      ];
+
+      if (existingCount > 0) {
+        messageParts.add(
+          '$existingCount already existed and were skipped.',
+        );
+      }
+
+      if (missingMenuItemCount > 0) {
+        messageParts.add(
+          '$missingMenuItemCount were skipped because menu items were missing.',
+        );
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            messageParts.join(' '),
+            style: GoogleFonts.plusJakartaSans(
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+          backgroundColor: AppTheme.success,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _buildTomorrowOrderGenerationErrorMessage(error),
+            style: GoogleFonts.plusJakartaSans(
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+          backgroundColor: AppTheme.error,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _runningTomorrowGeneration = false);
+      }
+    }
+  }
+
+  String _buildTomorrowOrderGenerationErrorMessage(Object error) {
+    if (error is PostgrestException) {
+      final errorCode = error.code?.trim() ?? '';
+      final errorDetails = '${error.details ?? ''}'.trim();
+      final errorHint = '${error.hint ?? ''}'.trim();
+      final parts = <String>[
+        'Tomorrow orders could not be created from subscriptions.',
+        'Blocking reason: ${error.message}',
+      ];
+
+      if (errorCode.isNotEmpty) {
+        parts.add('Error code: $errorCode');
+      }
+
+      if (errorDetails.isNotEmpty) {
+        parts.add('Details: $errorDetails');
+      }
+
+      if (errorHint.isNotEmpty) {
+        parts.add('Hint: $errorHint');
+      }
+
+      return parts.join('\n');
+    }
+
+    return 'Tomorrow orders were not generated.\n'
+        'Blocking reason: ${error.runtimeType}: $error';
   }
 
   void _showAssignRiderSheet(List<String> orderIds) {
@@ -451,9 +562,9 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                   fontWeight: FontWeight.w500,
                 ),
                 tabs: const <Tab>[
-                  Tab(text: 'One-time Orders'),
-                  Tab(text: 'Subscriptions'),
                   Tab(text: 'Tomorrow Orders'),
+                  Tab(text: 'Subscriptions'),
+                  Tab(text: 'OTO'),
                 ],
               ),
             ),
@@ -465,9 +576,9 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                   : TabBarView(
                       controller: _tabController,
                       children: <Widget>[
-                        _buildOneTimeOrders(),
-                        _buildSubscriptions(),
                         _buildTomorrowOrders(),
+                        _buildSubscriptions(),
+                        _buildOneTimeOrders(),
                       ],
                     ),
             ),
@@ -514,7 +625,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                       ),
                     ),
                     Text(
-                      'Assign mixed one-time and subscription orders together.',
+                      'Assign mixed OTO and subscription orders together.',
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 11,
                         color: Colors.white.withAlpha(190),
@@ -563,8 +674,8 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
     if (_oneTimeOrders.isEmpty) {
       return _buildEmptyState(
         icon: Icons.receipt_long_outlined,
-        title: 'No orders yet',
-        subtitle: 'New one-time customer orders will appear here.',
+        title: 'No OTO orders yet',
+        subtitle: 'New OTO customer orders will appear here.',
       );
     }
 
@@ -898,6 +1009,45 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                         ),
                       ),
                     ),
+                    const SizedBox(width: 10),
+                    SizedBox(
+                      height: 34,
+                      child: ElevatedButton(
+                        onPressed: _runningTomorrowGeneration
+                            ? null
+                            : _runTomorrowOrderGeneration,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.primary,
+                          disabledBackgroundColor:
+                              AppTheme.textMuted.withAlpha(60),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 0,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: _runningTomorrowGeneration
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : Text(
+                                'Get Tomorrow Orders',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                      ),
+                    ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
@@ -919,7 +1069,7 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
                 Text(
                   now.hour >= 6
                       ? 'Breakfast subscriptions for today are ready to be picked up.'
-                      : 'This view shows subscription cooking demand for the next operating day.',
+                      : 'Use the button above to generate tomorrow subscription orders.',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 12,
                     color: AppTheme.textSecondary,
@@ -934,9 +1084,47 @@ class _AdminOrdersTabState extends State<AdminOrdersTab>
             _buildEmptyState(
               icon: Icons.local_dining_outlined,
               title: 'No subscription orders scheduled',
-              subtitle: 'Run the cron-backed generator and active subscriptions will appear here.',
+              subtitle:
+                  'Use Get Tomorrow Orders and active subscriptions will appear here.',
             )
           else ...<Widget>[
+            if (summary.isNotEmpty) ...<Widget>[
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: AppTheme.cardShadow,
+                  border: Border.all(
+                    color: AppTheme.primary.withAlpha(16),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'What To Cook Tomorrow',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Prep quantities below are calculated from the orders table `items` data.',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12,
+                        color: AppTheme.textSecondary,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             ...summary.entries.map((entry) => _buildTomorrowSummaryCard(entry.key, entry.value, groupedOrders[entry.key]?.length ?? 0)),
             const SizedBox(height: 8),
             ...groupedOrders.entries.map((entry) => _buildTomorrowMealOrders(entry.key, entry.value, now, targetDate)),
